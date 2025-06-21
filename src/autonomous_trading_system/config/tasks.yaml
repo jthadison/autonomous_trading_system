@@ -1,0 +1,65 @@
+wyckoff_analysis_task :
+  description: >
+    Perform comprehensive Wyckoff methodology analysis on {symbol_name}:
+        
+        1. **Structure Analysis**: Identify if the market is in accumulation, distribution, or trending phase
+        2. **Phase Identification**: Determine which Wyckoff phase (A, B, C, D, or E) the market is currently in
+        3. **Spring/Upthrust Detection**: Look for springs (failed breakdowns) or upthrusts (failed breakouts)
+        4. **Volume Profile Analysis**: Identify VPOC, value areas, and volume distribution patterns
+        5. **Market Regime Assessment**: Determine if the market is trending, ranging, or volatile
+        6. **Cause and Effect**: Calculate potential price targets based on time spent in accumulation/distribution
+        
+        Use the analyze_wyckoff_patterns tool with 15-minute timeframe data.
+        Provide detailed confidence levels for each aspect of the analysis.
+        Focus on actionable insights for trading decisions.
+  expected_output: >
+    A comprehensive Wyckoff analysis report with structure type, phase, signals, volume analysis, and trading implications
+  agent: wyckoff_market_analyst
+
+wyckoff_risk_task:
+  description: >
+    Calculate risk parameters based on Wyckoff structure analysis:
+        
+        1. **Account Assessment**: Get current account balance and available margin
+        2. **Structure-Based Stops**: Calculate stop loss levels based on Wyckoff invalidation points:
+           - For accumulation trades: stops below spring lows or structure support
+           - For distribution trades: stops above upthrust highs or structure resistance
+        3. **Position Sizing**: Calculate optimal position size using 2% risk rule
+        4. **Risk/Reward Analysis**: Ensure minimum 1:2 risk/reward ratio to Wyckoff targets
+        5. **Exposure Limits**: Verify total portfolio exposure stays within limits
+        
+        Base all calculations on the Wyckoff structure analysis findings.
+        Prioritize capital preservation above all else.
+  expected_output: >
+    Detailed risk assessment with position sizing, stop levels, and risk/reward calculations based on Wyckoff levels
+  agent: wyckoff_risk_manager
+
+wyckoff_decision_task :
+  description: >
+    Make final trading decision based on comprehensive Wyckoff analysis:
+        
+        1. **Signal Validation**: Confirm trading signals meet Wyckoff criteria:
+           - Clear structure identification (accumulation/distribution)
+           - Proper phase timing (ideally Phase C or D)
+           - Spring/upthrust confirmation with volume validation
+           - Price position relative to VPOC and value areas
+        
+        2. **Entry Criteria**: Only recommend trades that show:
+           - High-probability Wyckoff setup (confidence >70%)
+           - Proper risk/reward ratio (minimum 1:2)
+           - Clear invalidation levels for stop placement
+           - Favorable market regime (not overly volatile)
+        
+        3. **Trade Management**: If recommending a trade, specify:
+           - Precise entry levels (market vs limit orders)
+           - Stop loss placement (at Wyckoff invalidation level)
+           - Target levels (based on Wyckoff projections)
+           - Position size (based on risk calculation)
+        
+        4. **Wait Conditions**: If no trade, specify what conditions to monitor for future setups
+        
+        Be conservative - only recommend trades with clear Wyckoff logic and high probability of success.
+  expected_output: >
+    Final trading decision with specific entry/exit levels, position size, and clear Wyckoff-based reasoning, or detailed wait conditions
+  agent: wyckoff_trading_coordinator  
+  context: [wyckoff_analysis_task, wyckoff_risk_task]

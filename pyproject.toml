@@ -1,0 +1,39 @@
+[project]
+name = "autonomous_trading_system"
+version = "0.1.0"
+description = "autonomous_trading_system using crewAI"
+authors = [{ name = "John Thadison", email = "jthadison@gmail.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "agentops>=0.4.16",
+    "asyncpg>=0.30.0",
+    "crewai-tools[mcp]>=0.47.1",
+    "crewai[tools]>=0.130.0,<1.0.0",
+    "langchain>=0.3.25",
+    "langchain-anthropic>=0.3.15",
+    "matplotlib>=3.10.3",
+    "mcp[tools]>=1.9.4",
+    "oandapyv20>=0.7.2",
+    "pandas>=2.3.0",
+    "plotly>=6.1.2",
+    "psycopg2>=2.9.10",
+    "seaborn>=0.13.2",
+    "sqlalchemy>=2.0.41",
+    "streamlit>=1.46.0",
+    "structlog>=25.4.0",
+    "uvicorn>=0.34.3",
+]
+
+[project.scripts]
+autonomous_trading_system = "autonomous_trading_system.main:run"
+run_crew = "autonomous_trading_system.main:run"
+train = "autonomous_trading_system.main:train"
+replay = "autonomous_trading_system.main:replay"
+test = "autonomous_trading_system.main:test"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "crew"
