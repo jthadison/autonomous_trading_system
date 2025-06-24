@@ -11,6 +11,7 @@ dependencies = [
     "crewai[tools]>=0.130.0,<1.0.0",
     "langchain>=0.3.25",
     "langchain-anthropic>=0.3.15",
+    "langchain-community>=0.3.25",
     "matplotlib>=3.10.3",
     "mcp[tools]>=1.9.4",
     "oandapyv20>=0.7.2",

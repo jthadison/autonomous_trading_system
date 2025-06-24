@@ -17,7 +17,7 @@ def run():
     """
     Run the crew.
     """
-    symbol_name ="BTC_USD"
+    symbol_name ="EUR_USD"
     
     inputs = {
         'topic': 'AI LLMs',

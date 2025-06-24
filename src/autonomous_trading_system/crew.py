@@ -3,14 +3,14 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any
+import json
 
 from crewai.utilities.events.third_party.agentops_listener import agentops
-
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from autonomous_trading_system.trading_dashboard import get_historical_data
+#from autonomous_trading_system.trading_dashboard import get_historical_data
 from autonomous_trading_system.utils.wyckoff_pattern_analyzer import wyckoff_analyzer
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
@@ -23,8 +23,9 @@ from src.database.manager import db_manager
 from src.database.models import AgentAction, LogLevel
 from crewai_tools import MCPServerAdapter
 from mcp import StdioServerParameters
-from pydantic import PydanticDeprecatedSince20
+from pydantic import PydanticDeprecatedSince20, SecretStr
 from langchain_anthropic import ChatAnthropic
+from src.autonomous_trading_system.tools.data_verification_agent import data_quality_report_tool, data_verification_tool
 import warnings
 import os
 
@@ -32,10 +33,47 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 warnings.filterwarnings("ignore", category=PydanticDeprecatedSince20)
-# If you want to run a snippet of code before or after the crew starts,
-# you can use the @before_kickoff and @after_kickoff decorators
-# https://docs.crewai.com/concepts/crews#example-crew-class-with-decorators
- 
+
+# Import the data verification tools
+try:
+    from autonomous_trading_system.tools.data_verification_agent import (
+        data_verification_tool, 
+        data_quality_report_tool
+    )
+except ImportError:
+    logger.warning("Could not import data verification tools")
+    data_verification_tool = None
+    data_quality_report_tool = None
+
+@tool
+def get_raw_market_data(instrument: str, timeframe: str = "M15", count: int = 200) -> str:
+    """Get raw market data from OANDA for verification and cleaning"""
+    async def _get_raw_data():
+        async with OandaMCPWrapper("http://localhost:8000") as oanda:
+            return await oanda.get_historical_data(instrument, timeframe, count)
+    
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, _get_raw_data())
+                result = future.result()
+        else:
+            result = asyncio.run(_get_raw_data())
+        
+        # Return raw data as JSON string for the verification agent to process
+        if "error" in result:
+            return f"Error retrieving data: {result['error']}"
+        
+        # Convert to JSON string (this is the potentially problematic data)
+        raw_data = result.get("data", {}).get("candles", [])
+        return json.dumps(raw_data)
+        
+    except Exception as e:
+        logger.error(f"Failed to get raw market data for {instrument}", error=str(e))
+        return f"Error: {str(e)}"
+
 @tool
 def get_live_price(instrument: str) -> Dict[str, Any]:
     """Get live price for a forex instrument"""
@@ -53,42 +91,20 @@ def get_live_price(instrument: str) -> Dict[str, Any]:
         else:
             return asyncio.run(_get_price())
     except Exception as e:
-        logger.error(f"Failed to get live price for {instrument}", error=str(e))
-        return {"error": str(e)}
-    
-@tool  
-def get_historical_data(instrument: str, timeframe: str = "M15", count: int = 200) -> Dict[str, Any]:
-    """Get historical price data for Wyckoff analysis"""
-    async def _get_historical():
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            return await oanda.get_historical_data(instrument, timeframe, count)
-    
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, _get_historical())
-                return future.result()
-        else:
-            return asyncio.run(_get_historical())
-    except Exception as e:
-        logger.error(f"Failed to get historical data for {instrument}", error=str(e))
+        logger.error("Failed to get live price", instrument=instrument, error=str(e))
         return {"error": str(e)}
 
 @tool
 async def analyze_wyckoff_patterns(instrument: str, timeframe: str = "M15") -> Dict[str, Any]:
-    """Perform comprehensive Wyckoff pattern analysis"""
+    """Perform comprehensive Wyckoff pattern analysis on cleaned data"""
     try:
-        # Get historical data for analysis
-        historical_data = get_historical_data(instrument, timeframe, 200)
+        # This will now work with cleaned data from the verification agent
+        async with OandaMCPWrapper("http://localhost:8000") as oanda:
+            return await oanda.get_historical_data(instrument, "M1", 100)
         
         if "error" in historical_data:
             return {"error": f"Failed to get data: {historical_data['error']}"}
-        
-        # Run Wyckoff analysis
         analysis_result = await wyckoff_analyzer.analyze_market_data(historical_data['data'], timeframe)
-        
         return analysis_result
         
     except Exception as e:
@@ -116,153 +132,161 @@ def get_account_info() -> Dict[str, Any]:
         return {"error": str(e)}
 
 @tool
-def calculate_position_size(account_balance: float, risk_per_trade: float, stop_distance_pips: float, pip_value: float = 1.0) -> Dict[str, Any]:
-    """Calculate position size based on Wyckoff levels and risk management"""
+def calculate_position_size(entry_price: float, stop_loss: float, risk_percent: float = 2.0) -> Dict[str, Any]:
+    """Calculate position size based on risk management"""
     try:
-        # Risk amount in dollars
-        risk_amount = account_balance * risk_per_trade
+        account = get_account_info()
+        if "error" in account:
+            return {"error": "Cannot get account info"}
         
-        # Position size calculation
-        if stop_distance_pips > 0 and pip_value > 0:
-            position_size = risk_amount / (stop_distance_pips * pip_value)
-        else:
-            position_size = 0
+        balance = float(account.get("balance", 0))
+        if balance <= 0:
+            return {"error": "Invalid account balance"}
+        
+        risk_amount = balance * (risk_percent / 100)
+        stop_distance = abs(entry_price - stop_loss)
+        if stop_distance == 0:
+            return {"error": "Invalid stop loss level"}
+        
+        position_size = risk_amount / stop_distance
         
         return {
-            "account_balance": account_balance,
-            "risk_per_trade_pct": risk_per_trade * 100,
-            "risk_amount": round(risk_amount, 2),
-            "stop_distance_pips": stop_distance_pips,
             "position_size": round(position_size, 0),
-            "pip_value": pip_value,
-            "max_position_size": round(account_balance * 0.1, 0)  # Never risk more than 10% of account
+            "risk_amount": risk_amount,
+            "stop_distance": stop_distance,
+            "balance": balance
         }
-        
     except Exception as e:
+        logger.error("Failed to calculate position size", error=str(e))
         return {"error": str(e)}
-    
-async def log_wyckoff_analysis(analysis_data: Dict[str, Any]):
-    """Log Wyckoff analysis to database"""
-    try:
-        async with db_manager.get_async_session() as session:
-            action = AgentAction(
-                agent_name="WyckoffAnalyzer",
-                action_type="WYCKOFF_ANALYSIS",
-                input_data={"timestamp": datetime.now().isoformat()},
-                output_data=analysis_data,
-                confidence_score=analysis_data.get("confidence_score", 0)
-            )
-            session.add(action)
-            await session.commit()
-    except Exception as e:
-        logger.error("Failed to log Wyckoff analysis", error=str(e))
-
-    
 
 @CrewBase
 class AutonomousTradingSystem():
-    """AutonomousTradingSystem crew"""
-    agentops.init(os.getenv("AGENTOP_API_KEY"), skip_auto_end_session=True)
+    """
+    Enhanced AutonomousTradingSystem with 4-Agent Pipeline:
+    1. Data Verification & Cleaning Agent
+    2. Wyckoff Market Analyst  
+    3. Wyckoff Risk Manager
+    4. Wyckoff Trading Coordinator
+    """
+    
+    def __init__(self):
+        if os.getenv("AGENTOP_API_KEY"):
+            agentops.init(os.getenv("AGENTOP_API_KEY"), skip_auto_end_session=True)
+        
+        self.claude_llm = self._init_claude_llm()
+    
+    def _init_claude_llm(self):
+        """Initialize Claude LLM"""
+        try:
+            anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+            if not anthropic_key:
+                raise ValueError("ANTHROPIC_API_KEY not found")
+            
+            claude_llm = ChatAnthropic(
+                model_name="claude-3-5-sonnet-20241022",
+                temperature=0.1,
+                #max_tokens=2000,
+                max_retries=3,
+                api_key=SecretStr(os.getenv('ANTHROPIC_API_KEY') or ""),
+
+                timeout=300,
+                stop=None
+            )
+            
+            logger.info("Claude LLM initialized successfully")
+            return claude_llm
+            
+        except Exception as e:
+            logger.error("Failed to initialize Claude LLM", error=str(e))
+            raise
 
     agents: List[BaseAgent]
     tasks: List[Task]
     
     agents_config = 'config/agents.yaml' 
-    tasks_config = 'config/tasks.yaml' 
-    
-    ''' def __init__(self):
-        server_params = StdioServerParameters(
-            command= "uvx",            
-            args= [
-               "mcp_servers/server.py"],
-                env={"UV_PYTHON": "3.12", **os.environ})
-        
-        with MCPServerAdapter(server_params) as mcp_tools:
-            print(f"Available tools: {[tool.name for tool in mcp_tools]}") '''
-        
-    #self.twelveData_tools = None
+    tasks_config = 'config/tasks.yaml'
 
-        # Initialize Claude Sonnet 3.5 with conservative settings
-    ''' self.claude_llm = ChatAnthropic(
-        model_name="claude-3-5-sonnet-20241022",
-        temperature=0.1,  # Low for consistent outputs
-        max_tokens=1500,  # Conservative token limit to avoid rate limits
-        max_retries=3,
-        anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
-        timeout=300,
-        stop=4
-    ) '''
+    @agent
+    def data_verification_agent(self) -> Agent:
+        return Agent(
+            config=self.agents_config['data_verification_agent'], # type: ignore[index]
+            tools=[
+                get_raw_market_data
+            ] ,
+            llm=self.claude_llm,
+            verbose=True
+        )
 
-    # Learn more about YAML configuration files here:
-    # Agents: https://docs.crewai.com/concepts/agents#yaml-configuration-recommended
-    # Tasks: https://docs.crewai.com/concepts/tasks#yaml-configuration-recommended
-    
-    # If you would like to add tools to your agents, you can learn more about it here:
-    # https://docs.crewai.com/concepts/agents#agent-tools
-    
-    # Global Oanda wrapper instance
-    oanda_wrapper = None
-
-    from src.autonomous_trading_system.utils.wyckoff_pattern_analyzer import wyckoff_analyzer
-
-    
-    
-    
     @agent
     def wyckoff_market_analyst(self) -> Agent:
         return Agent(
             config=self.agents_config['wyckoff_market_analyst'], # type: ignore[index]
+            tools=[analyze_wyckoff_patterns],
+            llm=self.claude_llm,
             verbose=True
         )
         
     @agent
     def wyckoff_risk_manager(self) -> Agent:
+        """Agent 3: Wyckoff Risk Manager"""
         return Agent(
             config=self.agents_config['wyckoff_risk_manager'], # type: ignore[index]
             tools=[get_account_info, calculate_position_size],
+            llm=self.claude_llm,
             verbose=True
         )
         
     @agent
     def wyckoff_trading_coordinator(self) -> Agent:
+        """Agent 4: Wyckoff Trading Coordinator"""
         return Agent(
             config=self.agents_config['wyckoff_trading_coordinator'], # type: ignore[index]
             tools=[get_live_price, get_account_info],
+            llm=self.claude_llm,
             verbose=True
         )
 
-    # To learn more about structured task outputs,
-    # task dependencies, and task callbacks, check out the documentation:
-    # https://docs.crewai.com/concepts/tasks#overview-of-a-task
+    @task
+    def data_verification_task(self) -> Task:
+        """Task 2: Wyckoff Analysis (uses clean data)"""
+        return Task(
+            config=self.tasks_config['data_verification_task'], # type: ignore[index]  # Depends on clean data
+        )        
+
     @task
     def wyckoff_analysis_task(self) -> Task:
+        """Task 2: Wyckoff Analysis (uses clean data)"""
         return Task(
             config=self.tasks_config['wyckoff_analysis_task'], # type: ignore[index]
+            context=[self.data_verification_task()]  # Depends on clean data
         )
 
     @task
     def wyckoff_risk_task(self) -> Task:
+        """Task 3: Risk Assessment"""
         return Task(
             config=self.tasks_config['wyckoff_risk_task'], # type: ignore[index]
+            context=[self.wyckoff_analysis_task()]  # Depends on market analysis
         )
         
     @task
     def wyckoff_decision_task(self) -> Task:
+        """Task 4: Trading Decision"""
         return Task(
             config=self.tasks_config['wyckoff_decision_task'], # type: ignore[index]
+            context=[self.wyckoff_analysis_task(), self.wyckoff_risk_task()]  # Depends on both
         )
 
     @crew
     def crew(self) -> Crew:
-        """Creates the AutonomousTradingSystem crew"""
-        # To learn how to add knowledge sources to your crew, check out the documentation:
-        # https://docs.crewai.com/concepts/knowledge#what-is-knowledge
-
+        """Creates the 4-Agent AutonomousTradingSystem crew with data verification"""
+        
         return Crew(
-            agents=self.agents, # Automatically created by the @agent decorator
-            tasks=self.tasks, # Automatically created by the @task decorator
+            agents=self.agents,
+            tasks=self.tasks,
             process=Process.sequential,
             verbose=True,
             memory=True,
-            # process=Process.hierarchical, # In case you wanna use that instead https://docs.crewai.com/how-to/Hierarchical/
+            # Data flows: Raw Data -> Verified Data -> Analysis -> Risk -> Decision
         )

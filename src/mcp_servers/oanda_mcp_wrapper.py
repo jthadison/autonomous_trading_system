@@ -363,7 +363,7 @@ async def test_bjlg_oanda_integration(symbol_name):
             return False
 
 if __name__ == "__main__":
-    symbol_name = "BTC_USD"
+    symbol_name = "EUR_USD"
     success = asyncio.run(test_bjlg_oanda_integration(symbol_name))
     if success:
         print("✅ Ready to integrate with CrewAI agents!")
