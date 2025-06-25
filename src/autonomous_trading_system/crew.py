@@ -95,18 +95,34 @@ def get_live_price(instrument: str) -> Dict[str, Any]:
         return {"error": str(e)}
 
 @tool
-async def analyze_wyckoff_patterns(instrument: str, timeframe: str = "M15") -> Dict[str, Any]:
-    """Perform comprehensive Wyckoff pattern analysis on cleaned data"""
+def analyze_wyckoff_patterns(instrument: str, timeframe: str = "M15") -> Dict[str, Any]:
+    """Perform comprehensive Wyckoff pattern analysis"""
+    async def _analyze_patterns():
+        try:
+            # Get historical data for analysis
+            async with OandaMCPWrapper("http://localhost:8000") as oanda:
+                historical_data = await oanda.get_historical_data(instrument, timeframe, 200)
+            
+            if "error" in historical_data:
+                return {"error": f"Failed to get data: {historical_data['error']}"}
+            # Run Wyckoff analysis
+            analysis_result = await wyckoff_analyzer.analyze_market_data(historical_data['data'], timeframe)
+            
+            return analysis_result
+            
+        except Exception as e:
+            logger.error(f"Wyckoff analysis failed for {instrument}", error=str(e))
+            return {"error": str(e)}
+    
     try:
-        # This will now work with cleaned data from the verification agent
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            return await oanda.get_historical_data(instrument, "M1", 100)
-        
-        if "error" in historical_data:
-            return {"error": f"Failed to get data: {historical_data['error']}"}
-        analysis_result = await wyckoff_analyzer.analyze_market_data(historical_data['data'], timeframe)
-        return analysis_result
-        
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, _analyze_patterns())
+                return future.result()
+        else:
+            return asyncio.run(_analyze_patterns())
     except Exception as e:
         logger.error(f"Wyckoff analysis failed for {instrument}", error=str(e))
         return {"error": str(e)}
@@ -179,7 +195,7 @@ class AutonomousTradingSystem():
     def _init_claude_llm(self):
         """Initialize Claude LLM"""
         try:
-            anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+            anthropic_key = SecretStr(os.getenv('ANTHROPIC_API_KEY') or "")
             if not anthropic_key:
                 raise ValueError("ANTHROPIC_API_KEY not found")
             
@@ -188,7 +204,7 @@ class AutonomousTradingSystem():
                 temperature=0.1,
                 #max_tokens=2000,
                 max_retries=3,
-                api_key=SecretStr(os.getenv('ANTHROPIC_API_KEY') or ""),
+                api_key=anthropic_key,
 
                 timeout=300,
                 stop=None
@@ -214,7 +230,7 @@ class AutonomousTradingSystem():
             tools=[
                 get_raw_market_data
             ] ,
-            llm=self.claude_llm,
+            #llm=self.claude_llm,
             verbose=True
         )
 
@@ -223,7 +239,7 @@ class AutonomousTradingSystem():
         return Agent(
             config=self.agents_config['wyckoff_market_analyst'], # type: ignore[index]
             tools=[analyze_wyckoff_patterns],
-            llm=self.claude_llm,
+            #llm=self.claude_llm,
             verbose=True
         )
         
@@ -233,7 +249,7 @@ class AutonomousTradingSystem():
         return Agent(
             config=self.agents_config['wyckoff_risk_manager'], # type: ignore[index]
             tools=[get_account_info, calculate_position_size],
-            llm=self.claude_llm,
+            #llm=self.claude_llm,
             verbose=True
         )
         
@@ -243,7 +259,7 @@ class AutonomousTradingSystem():
         return Agent(
             config=self.agents_config['wyckoff_trading_coordinator'], # type: ignore[index]
             tools=[get_live_price, get_account_info],
-            llm=self.claude_llm,
+            #llm=self.claude_llm,
             verbose=True
         )
 

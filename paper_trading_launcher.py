@@ -138,16 +138,18 @@ class PaperTradingController:
             return False
     
     def start_paper_trading_engine(self):
-        """Start the paper trading engine"""
-        print("🤖 Starting Paper Trading Engine...")
+        """Start the integrated paper trading engine"""
+        print("🤖 Starting Integrated Paper Trading Engine (with CrewAI)...")
         
         try:
-            # Try to import from different possible locations
+            # Try to import the integrated system from different possible locations
             try:
                 from paper_trading_system import PaperTradingEngine
+                print("   📂 Using integrated system from project root")
             except ImportError:
                 try:
                     from src.dashboard.paper_trading_system import PaperTradingEngine
+                    print("   📂 Using system from src/dashboard")
                 except ImportError:
                     # Add the directory containing the paper trading system to path
                     possible_paths = [
@@ -160,6 +162,7 @@ class PaperTradingController:
                         sys.path.insert(0, str(path))
                         try:
                             from paper_trading_system import PaperTradingEngine
+                            print(f"   📂 Using system from {path}")
                             break
                         except ImportError:
                             continue
@@ -167,24 +170,36 @@ class PaperTradingController:
                         raise ImportError("Could not find paper_trading_system module")
             
             async def run_engine():
+                print("   🧠 Initializing CrewAI agents...")
                 engine = PaperTradingEngine(initial_balance=100000.0)
+                
+                print("   🔗 Connecting to Oanda MCP...")
                 await engine.initialize()
+                
+                print("   🚀 Starting integrated trading loop...")
                 await engine.start_trading()
             
             # Run in a separate thread
             def engine_thread():
-                asyncio.run(run_engine())
+                try:
+                    asyncio.run(run_engine())
+                except Exception as e:
+                    print(f"   ❌ Engine error: {e}")
             
             thread = threading.Thread(target=engine_thread, daemon=True)
             thread.start()
             self.processes['engine'] = thread
             
-            print("✅ Paper Trading Engine started successfully!")
+            print("✅ Integrated Paper Trading Engine started successfully!")
+            print("   🤖 CrewAI agents are now analyzing markets...")
+            print("   📊 Wyckoff patterns will be detected automatically...")
+            print("   💹 Paper trades will be executed based on agent recommendations...")
             return True
             
         except Exception as e:
-            print(f"❌ Failed to start trading engine: {e}")
-            print(f"   Error details: {type(e).__name__}: {str(e)}")
+            print(f"❌ Failed to start integrated trading engine: {e}")
+            print(f"   💡 Error details: {type(e).__name__}: {str(e)}")
+            print(f"   💡 Make sure paper_trading_system.py contains the integrated version")
             return False
     
     def start_system(self, dashboard_only=False):

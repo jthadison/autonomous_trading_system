@@ -43,6 +43,7 @@ wyckoff_analysis_task :
   expected_output: >
     A comprehensive Wyckoff analysis report with structure type, phase, signals, volume analysis, and trading implications
   agent: wyckoff_market_analyst
+  context: [data_verification_task]
 
 wyckoff_risk_task:
   description: >
@@ -61,6 +62,7 @@ wyckoff_risk_task:
   expected_output: >
     Detailed risk assessment with position sizing, stop levels, and risk/reward calculations based on Wyckoff levels
   agent: wyckoff_risk_manager
+  context: [wyckoff_analysis_task]
 
 wyckoff_decision_task :
   description: >

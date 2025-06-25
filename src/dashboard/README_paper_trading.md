@@ -94,7 +94,7 @@ Follow the menu prompts.
 ## 📊 Dashboard Features
 
 ### **Live Market Data**
-- Real-time prices for EUR/USD, GBP/USD, USD/JPY, AUD/USD
+- Real-time prices for EUR_USD, GBP/USD, USD/JPY, AUD/USD
 - Live candlestick charts with 5-minute timeframe
 - Bid/Ask spreads and market connectivity status
 

@@ -208,7 +208,8 @@ class PaperTradingEngine:
         self.account = PaperAccount(balance=initial_balance, equity=initial_balance, free_margin=initial_balance)
         self.agents = {}
         self.running = False
-        self.trading_symbols = ["EUR_USD", "GBP_USD", "USD_JPY"]
+        #self.trading_symbols = ["EUR_USD", "GBP_USD", "USD_JPY"]
+        self.trading_symbols = ["EUR_USD"]
         self.analysis_interval = 60  # Analyze every 60 seconds
         self.price_cache = {}
         

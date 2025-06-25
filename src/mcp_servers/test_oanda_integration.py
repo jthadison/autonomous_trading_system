@@ -15,7 +15,7 @@ if str(project_root) not in sys.path:
 from src.config.logging_config import logger
 from src.database.manager import init_database
 
-symbol_name = 'EUR/USD'
+symbol_name = 'EUR_USD'
 
 async def test_live_oanda_integration():
     """Test our integration with the live BJLG-92 Oanda server"""

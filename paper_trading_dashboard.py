@@ -40,9 +40,11 @@ if str(project_root) not in sys.path:
 try:
     from src.mcp_servers.oanda_mcp_wrapper import OandaMCPWrapper
     OANDA_AVAILABLE = True
+    print("OANDA is available")
 except ImportError as e:
     st.error(f"⚠️ Oanda MCP wrapper not available: {e}")
     OANDA_AVAILABLE = False
+    print("OANDA is NOT available")
 
 try:
     from src.database.manager import get_db_session, db_manager
@@ -87,7 +89,7 @@ st.markdown("""
 
 @st.cache_data(ttl=5)  # Cache for 5 seconds
 def get_live_prices() -> Dict[str, Any]:
-    """Get live prices for multiple symbols - always returns a dict"""
+    """Get live prices for multiple symbols - WINDOWS COMPATIBLE"""
     if not OANDA_AVAILABLE:
         return {"error": "Oanda MCP not available"}
     
@@ -100,6 +102,8 @@ def get_live_prices() -> Dict[str, Any]:
                 for symbol in symbols:
                     try:
                         price_data = await oanda.get_current_price(symbol)
+                        print("*" * 40)
+                        print(f"Price Data {price_data}")
                         if isinstance(price_data, dict):
                             prices[symbol] = {
                                 'bid': float(price_data.get('bid', 0)),
@@ -134,44 +138,108 @@ def get_live_prices() -> Dict[str, Any]:
     except Exception as e:
         return {"error": f"Failed to get live prices: {e}"}
 
+# Replace ONLY the get_historical_chart_data function in your dashboard with this enhanced debug version:
+
 @st.cache_data(ttl=10)
 def get_historical_chart_data(symbol: str, timeframe: str = "M5", count: int = 100) -> List[Any]:
-    """Get historical data for charting - always returns a list"""
+    """Get historical data for charting - WINDOWS COMPATIBLE VERSION"""
     if not OANDA_AVAILABLE:
+        print("ERROR: OANDA not available")
         return []
     
     async def _get_data():
         try:
             async with OandaMCPWrapper("http://localhost:8000") as oanda:
-                return await oanda.get_historical_data(symbol, timeframe, count)
+                print(f"INFO: API Call: symbol={symbol}, timeframe={timeframe}, count={count}")
+                historical_data = await oanda.get_historical_data(symbol, timeframe, count)
+                print(f"INFO: Raw API Response Type: {type(historical_data)}")
+                
+                if isinstance(historical_data, dict):
+                    print(f"INFO: Response Keys: {list(historical_data.keys())}")
+                
+                return historical_data
         except Exception as e:
+            print(f"ERROR: API Error: {e}")
             return {"error": str(e)}
     
     try:
+        print(f"\nINFO: Starting historical data request for {symbol}")
         data = asyncio.run(_get_data())
+        print(f"SUCCESS: API call completed, processing response...")
         
-        # Handle different response types
+        # Handle the EXISTING wrapper's response format
         if isinstance(data, dict):
+            print("INFO: Response is a dictionary")
+            
             if "error" in data:
-                st.error(f"Failed to get historical data: {data['error']}")
+                error_msg = f"API Error: {data['error']}"
+                st.error(f"Failed to get historical data: {error_msg}")
+                print(f"ERROR: {error_msg}")
                 return []
-            # If data is a dict with 'data' key
+            
+            # Handle the ACTUAL format from your logs: {'success': True, 'data': {'candles': [...]}}
+            if "success" in data and data.get("success") and "data" in data:
+                nested_data = data["data"]
+                print(f"SUCCESS: Found 'success' wrapper! Nested data type: {type(nested_data)}")
+                
+                if isinstance(nested_data, dict) and "candles" in nested_data:
+                    chart_data = nested_data["candles"]
+                    print(f"SUCCESS: Found nested 'candles' key! Type: {type(chart_data)}")
+                    print(f"INFO: Candles count: {len(chart_data) if isinstance(chart_data, list) else 'Not a list'}")
+                    
+                    if isinstance(chart_data, list) and len(chart_data) > 0:
+                        print(f"INFO: Sample candle: {chart_data[0]}")
+                        print(f"SUCCESS: Returning {len(chart_data)} candles from existing wrapper")
+                        return chart_data
+                    else:
+                        print("WARNING: Candles list is empty or invalid")
+                        return []
+                else:
+                    print(f"ERROR: No 'candles' key in nested data. Available keys: {list(nested_data.keys()) if isinstance(nested_data, dict) else 'Not a dict'}")
+                    return []
+            
+            # Fallback for other possible formats
             elif "data" in data:
                 chart_data = data.get('data', [])
                 if isinstance(chart_data, list):
+                    print(f"SUCCESS: Returning {len(chart_data)} items from 'data' key")
                     return chart_data
+                elif isinstance(chart_data, dict) and "candles" in chart_data:
+                    candles = chart_data["candles"]
+                    print(f"SUCCESS: Found candles in data object: {len(candles) if isinstance(candles, list) else 'Not a list'}")
+                    return candles if isinstance(candles, list) else []
                 else:
+                    print(f"ERROR: 'data' key contains unexpected format: {type(chart_data)}")
                     return []
+            
+            elif "candles" in data:
+                chart_data = data.get('candles', [])
+                print(f"SUCCESS: Found direct 'candles' key: {len(chart_data) if isinstance(chart_data, list) else 'Not a list'}")
+                return chart_data if isinstance(chart_data, list) else []
+            
             else:
+                available_keys = list(data.keys())
+                print(f"ERROR: No expected keys found!")
+                print(f"INFO: Available keys: {available_keys}")
+                print(f"INFO: Full response (first 500 chars): {str(data)[:500]}...")
                 return []
+                
         elif isinstance(data, list):
+            print(f"INFO: Response is already a list with {len(data)} items")
             return data
+            
         else:
-            st.error(f"Unexpected data type received: {type(data)}")
+            error_msg = f"Unexpected data type: {type(data)}"
+            st.error(error_msg)
+            print(f"ERROR: {error_msg}")
             return []
             
     except Exception as e:
-        st.error(f"Failed to get historical data: {e}")
+        error_msg = f"Exception in get_historical_chart_data: {e}"
+        st.error(error_msg)
+        print(f"ERROR: {error_msg}")
+        import traceback
+        traceback.print_exc()
         return []
 
 @st.cache_data(ttl=5)
@@ -199,11 +267,16 @@ def get_recent_events(limit: int = 20) -> List[Any]:
         return []
     
     try:
+        print("*" * 50)
+        print("Getting recent events")
+        print("*" * 50)
         session = get_db_session()
         events = session.query(EventLog)\
                         .filter(EventLog.agent_name == "PaperTradingEngine")\
                         .order_by(desc(EventLog.timestamp))\
-                        .limit(limit).all()
+                        .limit(limit)
+        print(f"events sql: {events}")
+        events.all()
         session.close()
         return list(events) if events else []
     except Exception as e:
@@ -211,63 +284,77 @@ def get_recent_events(limit: int = 20) -> List[Any]:
         return []
 
 def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.Figure]:
-    """Create candlestick chart for symbol"""
-    # Ensure we have a valid list
+    """Create candlestick chart - WINDOWS COMPATIBLE VERSION"""
     if not isinstance(historical_data, list) or not historical_data:
         st.warning(f"No historical data available for {symbol}")
         return None
     
     try:
-        # Process historical data
-        df = pd.DataFrame(historical_data)
-        
-        # Handle different possible data structures
         processed_data = []
         
-        # Case 1: Data has 'candles' key with nested structure
-        if 'candles' in df.columns and len(df) > 0:
-            candles = df['candles'].iloc[0]
-            if isinstance(candles, list):
-                for candle in candles:
-                    try:
-                        if isinstance(candle, dict) and 'mid' in candle:
-                            mid_data = candle.get('mid', {})
-                            processed_data.append({
-                                'time': candle.get('time', ''),
-                                'open': float(mid_data.get('o', 0)),
-                                'high': float(mid_data.get('h', 0)),
-                                'low': float(mid_data.get('l', 0)),
-                                'close': float(mid_data.get('c', 0)),
-                                'volume': int(candle.get('volume', 0))
-                            })
-                    except (KeyError, TypeError, ValueError) as e:
-                        continue
+        print(f"INFO: Processing {len(historical_data)} candles for {symbol}")
+        print(f"INFO: Sample candle structure: {historical_data[0] if historical_data else 'No data'}")
         
-        # Case 2: Data is already in flat structure
-        elif len(df) > 0 and any(col in df.columns for col in ['open', 'high', 'low', 'close']):
-            processed_data = df.to_dict('records')
-        
-        # Case 3: Try to process raw list data
-        elif isinstance(historical_data[0], dict):
-            for item in historical_data:
-                try:
-                    if 'mid' in item:
-                        mid_data = item.get('mid', {})
+        for i, candle in enumerate(historical_data):
+            try:
+                if isinstance(candle, dict):
+                    # Handle the ACTUAL Oanda format from your logs:
+                    # {'complete': True, 'volume': 255008, 'time': '2025-04-16T21:00:00.000000000Z', 'mid': {'o': '1.13994', 'h': '1.14094', 'l': '1.13352', 'c': '1.13646'}}
+                    
+                    if 'mid' in candle and 'time' in candle:
+                        mid_data = candle.get('mid', {})
                         processed_data.append({
-                            'time': item.get('time', ''),
+                            'time': candle.get('time', ''),
                             'open': float(mid_data.get('o', 0)),
                             'high': float(mid_data.get('h', 0)),
                             'low': float(mid_data.get('l', 0)),
                             'close': float(mid_data.get('c', 0)),
-                            'volume': int(item.get('volume', 0))
+                            'volume': int(candle.get('volume', 0))
                         })
-                    elif all(key in item for key in ['open', 'high', 'low', 'close']):
-                        processed_data.append(item)
-                except (KeyError, TypeError, ValueError):
-                    continue
+                        if i == 0:  # Debug first candle
+                            print(f"SUCCESS: First candle processed successfully: {processed_data[-1]}")
+                    
+                    # Fallback: Handle direct OHLC format
+                    elif all(key in candle for key in ['open', 'high', 'low', 'close', 'time']):
+                        processed_data.append({
+                            'time': candle.get('time', ''),
+                            'open': float(candle.get('open', 0)),
+                            'high': float(candle.get('high', 0)),
+                            'low': float(candle.get('low', 0)),
+                            'close': float(candle.get('close', 0)),
+                            'volume': int(candle.get('volume', 0))
+                        })
+                        if i == 0:
+                            print(f"SUCCESS: First candle processed (direct format): {processed_data[-1]}")
+                    
+                    # Fallback: Handle 'bid' format (if it exists)
+                    elif 'bid' in candle and 'time' in candle:
+                        bid_data = candle.get('bid', {})
+                        processed_data.append({
+                            'time': candle.get('time', ''),
+                            'open': float(bid_data.get('o', 0)),
+                            'high': float(bid_data.get('h', 0)),
+                            'low': float(bid_data.get('l', 0)),
+                            'close': float(bid_data.get('c', 0)),
+                            'volume': int(candle.get('volume', 0))
+                        })
+                        if i == 0:
+                            print(f"SUCCESS: First candle processed (bid format): {processed_data[-1]}")
+                    
+                    else:
+                        if i == 0:  # Debug first problematic candle
+                            print(f"ERROR: Unrecognized candle structure: {candle}")
+                            print(f"INFO: Available keys: {list(candle.keys())}")
+                            
+            except (KeyError, TypeError, ValueError) as e:
+                print(f"ERROR: Error processing candle {i}: {e}")
+                continue
+        
+        print(f"SUCCESS: Successfully processed {len(processed_data)} out of {len(historical_data)} candles")
         
         if not processed_data:
             st.warning(f"Could not process data format for {symbol}")
+            st.write("Debug - Sample candle:", str(historical_data[0]) if historical_data else "No data")
             return None
         
         # Create DataFrame from processed data
@@ -295,6 +382,9 @@ def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.F
         # Sort by time
         df = df.sort_values('time')
         
+        print(f"SUCCESS: Final DataFrame shape: {df.shape}")
+        print(f"INFO: Date range: {df['time'].min()} to {df['time'].max()}")
+        
         # Create candlestick chart
         fig = go.Figure(data=[go.Candlestick(
             x=df['time'],
@@ -306,7 +396,7 @@ def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.F
         )])
         
         fig.update_layout(
-            title=f"{symbol} Live Chart",
+            title=f"{symbol} Live Chart ({len(df)} candles)",
             xaxis_title="Time",
             yaxis_title="Price",
             height=400,
@@ -319,11 +409,73 @@ def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.F
     except Exception as e:
         st.error(f"Failed to create chart for {symbol}: {e}")
         st.write("Debug - Raw data sample:", str(historical_data[:2]) if len(historical_data) > 0 else "Empty data")
+        import traceback
+        traceback.print_exc()
         return None
+
+# Windows-compatible debug function
+def debug_existing_wrapper():
+    """Debug function for your existing wrapper - WINDOWS COMPATIBLE"""
+    st.write("### Debug: Existing Wrapper Response")
+    
+    if st.button("Test Existing Wrapper"):
+        with st.spinner("Testing your existing wrapper..."):
+            try:
+                async def test_wrapper():
+                    async with OandaMCPWrapper("http://localhost:8000") as oanda:
+                        # Test historical data exactly as your wrapper returns it
+                        response = await oanda.get_historical_data("EUR_USD", "M5", 10)
+                        return response
+                
+                result = asyncio.run(test_wrapper())
+                
+                st.write("**Raw Wrapper Response:**")
+                st.write(f"- Type: `{type(result)}`")
+                
+                if isinstance(result, dict):
+                    st.write(f"- Keys: `{list(result.keys())}`")
+                    
+                    # Analyze the actual structure
+                    if "success" in result and "data" in result:
+                        data_part = result["data"]
+                        st.write(f"- Data type: `{type(data_part)}`")
+                        if isinstance(data_part, dict):
+                            st.write(f"- Data keys: `{list(data_part.keys())}`")
+                            
+                            if "candles" in data_part:
+                                candles = data_part["candles"]
+                                st.write(f"- Candles count: `{len(candles) if isinstance(candles, list) else 'Not a list'}`")
+                                
+                                if isinstance(candles, list) and len(candles) > 0:
+                                    st.write("**Sample candle from your wrapper:**")
+                                    st.json(candles[0])
+                                    
+                                    # Check the actual structure we need to handle
+                                    sample_candle = candles[0]
+                                    if 'mid' in sample_candle:
+                                        st.success("Found 'mid' format - dashboard will handle this!")
+                                    elif 'bid' in sample_candle:
+                                        st.success("Found 'bid' format - dashboard will handle this!")
+                                    elif 'open' in sample_candle:
+                                        st.success("Found direct OHLC format - dashboard will handle this!")
+                                    else:
+                                        st.warning("Unknown format - may need dashboard adjustment")
+                
+                # Show structure analysis
+                with st.expander("Full Response Structure"):
+                    st.json(result)
+                    
+            except Exception as e:
+                st.error(f"Wrapper test failed: {e}")
+                st.write(f"Error type: {type(e).__name__}")
 
 def main() -> None:
     st.title("📈 Real-Time Paper Trading Dashboard")
     st.markdown("---")
+    
+    # Debug section for existing wrapper
+    with st.expander("🔧 Debug Existing Wrapper"):
+        debug_existing_wrapper()
     
     # Show system status first
     col1, col2, col3 = st.columns(3)
@@ -347,9 +499,10 @@ def main() -> None:
     st.sidebar.header("🎛️ Controls")
     
     # Auto-refresh toggle
-    auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh (5s)", value=True)
+    seconds_to_refresh = 30
+    auto_refresh = st.sidebar.checkbox(f"🔄 Auto Refresh ({seconds_to_refresh}s)", value=True)
     if auto_refresh:
-        time.sleep(5)
+        time.sleep(seconds_to_refresh)
         st.rerun()
     
     # Manual refresh button
@@ -362,7 +515,7 @@ def main() -> None:
     symbols = st.sidebar.multiselect(
         "Select Symbols to Monitor",
         ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"],
-        default=["EUR_USD", "GBP_USD"]
+        default=["EUR_USD"]  # Start with just EUR_USD for testing
     )
     
     # Main dashboard content
@@ -388,7 +541,7 @@ def main() -> None:
             avg_spread = sum(p.get('spread', 0) for p in live_prices.values()) / len(live_prices)
             st.metric(
                 label="📈 Avg Spread",
-                value=f"{avg_spread:.1f} pips",
+                value=f"{avg_spread:.5f} pips",
                 delta="Live data"
             )
         else:
@@ -428,7 +581,7 @@ def main() -> None:
                     'Symbol': symbol,
                     'Bid': f"{data.get('bid', 0):.5f}",
                     'Ask': f"{data.get('ask', 0):.5f}",
-                    'Spread': f"{spread_pips:.1f} pips",
+                    'Spread': f"{spread_pips:.5f} pips",
                     'Last Update': data.get('timestamp', datetime.now()).strftime("%H:%M:%S")
                 })
         
@@ -451,8 +604,20 @@ def main() -> None:
         for i, symbol in enumerate(symbols):
             with tabs[i]:
                 if "error" not in live_prices and symbol in live_prices and 'error' not in live_prices[symbol]:
+                    
+                    # Debug checkbox
+                    debug_mode = st.checkbox(f"🔍 Show debug info for {symbol}", key=f"debug_{symbol}")
+                    
                     # Get historical data for chart
                     historical_data = get_historical_chart_data(symbol, "M5", 50)
+                    
+                    if debug_mode:
+                        st.write(f"**Debug Info for {symbol}:**")
+                        st.write(f"- Data type: {type(historical_data)}")
+                        st.write(f"- Data length: {len(historical_data) if historical_data else 0}")
+                        if historical_data and len(historical_data) > 0:
+                            st.write("- Sample candle:")
+                            st.json(historical_data[0])
                     
                     # Ensure we have valid list data before creating chart
                     if isinstance(historical_data, list) and len(historical_data) > 0:
@@ -482,13 +647,15 @@ def main() -> None:
                             with col3:
                                 st.metric(
                                     "Spread",
-                                    f"{current_price.get('spread', 0):.1f} pips",
+                                    f"{current_price.get('spread', 0):.5f} pips",
                                     delta=None
                                 )
                         else:
                             st.error(f"Unable to create chart for {symbol}")
+                            st.info("💡 Enable debug info above to see data structure")
                     else:
                         st.warning(f"No historical data available for {symbol}")
+                        st.info("💡 Check your Oanda MCP connection and enable debug info")
                 else:
                     st.error(f"❌ Price data unavailable for {symbol}")
     else:
