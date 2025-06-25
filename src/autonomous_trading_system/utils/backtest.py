@@ -1885,7 +1885,7 @@ class EnhancedWyckoffDataProcessor:
                     candle['low'] <= candle['close'] <= candle['high']):
                 return False
             
-            # Check for reasonable price ranges (EUR/USD example)
+            # Check for reasonable price ranges (EUR_USD example)
             if candle['close'] < 0.5 or candle['close'] > 2.0:
                 return False
             

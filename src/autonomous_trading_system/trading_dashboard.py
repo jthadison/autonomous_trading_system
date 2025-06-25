@@ -32,7 +32,7 @@ symbol_name = "EUR_USD"
 
 @st.cache_data(ttl=30)  # Cache for 30 seconds
 def get_live_price():
-    """Get live EUR/USD price"""
+    """Get live EUR_USD price"""
     async def _get_price():
         async with OandaMCPWrapper("http://localhost:8000") as oanda:
             return await oanda.get_current_price(symbol_name)

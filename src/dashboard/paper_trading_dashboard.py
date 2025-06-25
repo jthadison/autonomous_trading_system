@@ -92,7 +92,8 @@ def get_live_prices() -> Dict[str, Any]:
         return {"error": "Oanda MCP not available"}
     
     async def _get_prices():
-        symbols = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"]
+        #symbols = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"]
+        symbols = ["EUR_USD"]
         prices = {}
         
         try:
@@ -359,10 +360,16 @@ def main() -> None:
     
     # Trading symbols selection
     st.sidebar.header("📊 Symbols")
+    # symbols = st.sidebar.multiselect(
+    #     "Select Symbols to Monitor",
+    #     ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"],
+    #     default=["EUR_USD", "GBP_USD"]
+    # )
+    
     symbols = st.sidebar.multiselect(
         "Select Symbols to Monitor",
-        ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"],
-        default=["EUR_USD", "GBP_USD"]
+        ["EUR_USD"],
+        default=["EUR_USD"]
     )
     
     # Main dashboard content
