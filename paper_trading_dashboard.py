@@ -89,12 +89,12 @@ st.markdown("""
 
 @st.cache_data(ttl=5)  # Cache for 5 seconds
 def get_live_prices() -> Dict[str, Any]:
-    """Get live prices for multiple symbols - always returns a dict"""
+    """Get live prices for multiple symbols - WINDOWS COMPATIBLE"""
     if not OANDA_AVAILABLE:
         return {"error": "Oanda MCP not available"}
     
     async def _get_prices():
-        symbols = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"]  # Restored all symbols
+        symbols = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"]
         prices = {}
         
         try:
@@ -142,102 +142,102 @@ def get_live_prices() -> Dict[str, Any]:
 
 @st.cache_data(ttl=10)
 def get_historical_chart_data(symbol: str, timeframe: str = "M5", count: int = 100) -> List[Any]:
-    """Get historical data for charting - WORKS WITH EXISTING WRAPPER"""
+    """Get historical data for charting - WINDOWS COMPATIBLE VERSION"""
     if not OANDA_AVAILABLE:
-        print("❌ OANDA not available")
+        print("ERROR: OANDA not available")
         return []
     
     async def _get_data():
         try:
             async with OandaMCPWrapper("http://localhost:8000") as oanda:
-                print(f"🔍 API Call: symbol={symbol}, timeframe={timeframe}, count={count}")
+                print(f"INFO: API Call: symbol={symbol}, timeframe={timeframe}, count={count}")
                 historical_data = await oanda.get_historical_data(symbol, timeframe, count)
-                print(f"📦 Raw API Response Type: {type(historical_data)}")
+                print(f"INFO: Raw API Response Type: {type(historical_data)}")
                 
                 if isinstance(historical_data, dict):
-                    print(f"📋 Response Keys: {list(historical_data.keys())}")
+                    print(f"INFO: Response Keys: {list(historical_data.keys())}")
                 
                 return historical_data
         except Exception as e:
-            print(f"💥 API Error: {e}")
+            print(f"ERROR: API Error: {e}")
             return {"error": str(e)}
     
     try:
-        print(f"\n🚀 Starting historical data request for {symbol}")
+        print(f"\nINFO: Starting historical data request for {symbol}")
         data = asyncio.run(_get_data())
-        print(f"✅ API call completed, processing response...")
+        print(f"SUCCESS: API call completed, processing response...")
         
         # Handle the EXISTING wrapper's response format
         if isinstance(data, dict):
-            print("📦 Response is a dictionary")
+            print("INFO: Response is a dictionary")
             
             if "error" in data:
                 error_msg = f"API Error: {data['error']}"
                 st.error(f"Failed to get historical data: {error_msg}")
-                print(f"❌ {error_msg}")
+                print(f"ERROR: {error_msg}")
                 return []
             
             # Handle the ACTUAL format from your logs: {'success': True, 'data': {'candles': [...]}}
             if "success" in data and data.get("success") and "data" in data:
                 nested_data = data["data"]
-                print(f"✅ Found 'success' wrapper! Nested data type: {type(nested_data)}")
+                print(f"SUCCESS: Found 'success' wrapper! Nested data type: {type(nested_data)}")
                 
                 if isinstance(nested_data, dict) and "candles" in nested_data:
                     chart_data = nested_data["candles"]
-                    print(f"✅ Found nested 'candles' key! Type: {type(chart_data)}")
-                    print(f"📊 Candles count: {len(chart_data) if isinstance(chart_data, list) else 'Not a list'}")
+                    print(f"SUCCESS: Found nested 'candles' key! Type: {type(chart_data)}")
+                    print(f"INFO: Candles count: {len(chart_data) if isinstance(chart_data, list) else 'Not a list'}")
                     
                     if isinstance(chart_data, list) and len(chart_data) > 0:
-                        print(f"📊 Sample candle: {chart_data[0]}")
-                        print(f"🎯 SUCCESS: Returning {len(chart_data)} candles from existing wrapper")
+                        print(f"INFO: Sample candle: {chart_data[0]}")
+                        print(f"SUCCESS: Returning {len(chart_data)} candles from existing wrapper")
                         return chart_data
                     else:
-                        print("⚠️ Candles list is empty or invalid")
+                        print("WARNING: Candles list is empty or invalid")
                         return []
                 else:
-                    print(f"❌ No 'candles' key in nested data. Available keys: {list(nested_data.keys()) if isinstance(nested_data, dict) else 'Not a dict'}")
+                    print(f"ERROR: No 'candles' key in nested data. Available keys: {list(nested_data.keys()) if isinstance(nested_data, dict) else 'Not a dict'}")
                     return []
             
             # Fallback for other possible formats
             elif "data" in data:
                 chart_data = data.get('data', [])
                 if isinstance(chart_data, list):
-                    print(f"🎯 Returning {len(chart_data)} items from 'data' key")
+                    print(f"SUCCESS: Returning {len(chart_data)} items from 'data' key")
                     return chart_data
                 elif isinstance(chart_data, dict) and "candles" in chart_data:
                     candles = chart_data["candles"]
-                    print(f"🎯 Found candles in data object: {len(candles) if isinstance(candles, list) else 'Not a list'}")
+                    print(f"SUCCESS: Found candles in data object: {len(candles) if isinstance(candles, list) else 'Not a list'}")
                     return candles if isinstance(candles, list) else []
                 else:
-                    print(f"❌ 'data' key contains unexpected format: {type(chart_data)}")
+                    print(f"ERROR: 'data' key contains unexpected format: {type(chart_data)}")
                     return []
             
             elif "candles" in data:
                 chart_data = data.get('candles', [])
-                print(f"✅ Found direct 'candles' key: {len(chart_data) if isinstance(chart_data, list) else 'Not a list'}")
+                print(f"SUCCESS: Found direct 'candles' key: {len(chart_data) if isinstance(chart_data, list) else 'Not a list'}")
                 return chart_data if isinstance(chart_data, list) else []
             
             else:
                 available_keys = list(data.keys())
-                print(f"❌ No expected keys found!")
-                print(f"📋 Available keys: {available_keys}")
-                print(f"📊 Full response (first 500 chars): {str(data)[:500]}...")
+                print(f"ERROR: No expected keys found!")
+                print(f"INFO: Available keys: {available_keys}")
+                print(f"INFO: Full response (first 500 chars): {str(data)[:500]}...")
                 return []
                 
         elif isinstance(data, list):
-            print(f"📦 Response is already a list with {len(data)} items")
+            print(f"INFO: Response is already a list with {len(data)} items")
             return data
             
         else:
             error_msg = f"Unexpected data type: {type(data)}"
             st.error(error_msg)
-            print(f"❌ {error_msg}")
+            print(f"ERROR: {error_msg}")
             return []
             
     except Exception as e:
         error_msg = f"Exception in get_historical_chart_data: {e}"
         st.error(error_msg)
-        print(f"💥 {error_msg}")
+        print(f"ERROR: {error_msg}")
         import traceback
         traceback.print_exc()
         return []
@@ -267,11 +267,16 @@ def get_recent_events(limit: int = 20) -> List[Any]:
         return []
     
     try:
+        print("*" * 50)
+        print("Getting recent events")
+        print("*" * 50)
         session = get_db_session()
         events = session.query(EventLog)\
                         .filter(EventLog.agent_name == "PaperTradingEngine")\
                         .order_by(desc(EventLog.timestamp))\
-                        .limit(limit).all()
+                        .limit(limit)
+        print(f"events sql: {events}")
+        events.all()
         session.close()
         return list(events) if events else []
     except Exception as e:
@@ -279,7 +284,7 @@ def get_recent_events(limit: int = 20) -> List[Any]:
         return []
 
 def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.Figure]:
-    """Create candlestick chart - WORKS WITH EXISTING WRAPPER DATA FORMAT"""
+    """Create candlestick chart - WINDOWS COMPATIBLE VERSION"""
     if not isinstance(historical_data, list) or not historical_data:
         st.warning(f"No historical data available for {symbol}")
         return None
@@ -287,8 +292,8 @@ def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.F
     try:
         processed_data = []
         
-        print(f"Processing {len(historical_data)} candles for {symbol}")
-        print(f"Sample candle structure: {historical_data[0] if historical_data else 'No data'}")
+        print(f"INFO: Processing {len(historical_data)} candles for {symbol}")
+        print(f"INFO: Sample candle structure: {historical_data[0] if historical_data else 'No data'}")
         
         for i, candle in enumerate(historical_data):
             try:
@@ -307,7 +312,7 @@ def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.F
                             'volume': int(candle.get('volume', 0))
                         })
                         if i == 0:  # Debug first candle
-                            print(f"✅ First candle processed successfully: {processed_data[-1]}")
+                            print(f"SUCCESS: First candle processed successfully: {processed_data[-1]}")
                     
                     # Fallback: Handle direct OHLC format
                     elif all(key in candle for key in ['open', 'high', 'low', 'close', 'time']):
@@ -320,7 +325,7 @@ def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.F
                             'volume': int(candle.get('volume', 0))
                         })
                         if i == 0:
-                            print(f"✅ First candle processed (direct format): {processed_data[-1]}")
+                            print(f"SUCCESS: First candle processed (direct format): {processed_data[-1]}")
                     
                     # Fallback: Handle 'bid' format (if it exists)
                     elif 'bid' in candle and 'time' in candle:
@@ -334,18 +339,18 @@ def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.F
                             'volume': int(candle.get('volume', 0))
                         })
                         if i == 0:
-                            print(f"✅ First candle processed (bid format): {processed_data[-1]}")
+                            print(f"SUCCESS: First candle processed (bid format): {processed_data[-1]}")
                     
                     else:
                         if i == 0:  # Debug first problematic candle
-                            print(f"❌ Unrecognized candle structure: {candle}")
-                            print(f"   Available keys: {list(candle.keys())}")
+                            print(f"ERROR: Unrecognized candle structure: {candle}")
+                            print(f"INFO: Available keys: {list(candle.keys())}")
                             
             except (KeyError, TypeError, ValueError) as e:
-                print(f"Error processing candle {i}: {e}")
+                print(f"ERROR: Error processing candle {i}: {e}")
                 continue
         
-        print(f"✅ Successfully processed {len(processed_data)} out of {len(historical_data)} candles")
+        print(f"SUCCESS: Successfully processed {len(processed_data)} out of {len(historical_data)} candles")
         
         if not processed_data:
             st.warning(f"Could not process data format for {symbol}")
@@ -377,8 +382,8 @@ def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.F
         # Sort by time
         df = df.sort_values('time')
         
-        print(f"✅ Final DataFrame shape: {df.shape}")
-        print(f"📅 Date range: {df['time'].min()} to {df['time'].max()}")
+        print(f"SUCCESS: Final DataFrame shape: {df.shape}")
+        print(f"INFO: Date range: {df['time'].min()} to {df['time'].max()}")
         
         # Create candlestick chart
         fig = go.Figure(data=[go.Candlestick(
@@ -407,12 +412,13 @@ def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.F
         import traceback
         traceback.print_exc()
         return None
-    
+
+# Windows-compatible debug function
 def debug_existing_wrapper():
-    """Debug function for your existing wrapper - NO WRAPPER CHANGES"""
-    st.write("### 🔍 Debug: Existing Wrapper Response")
+    """Debug function for your existing wrapper - WINDOWS COMPATIBLE"""
+    st.write("### Debug: Existing Wrapper Response")
     
-    if st.button("🧪 Test Existing Wrapper"):
+    if st.button("Test Existing Wrapper"):
         with st.spinner("Testing your existing wrapper..."):
             try:
                 async def test_wrapper():
@@ -447,16 +453,16 @@ def debug_existing_wrapper():
                                     # Check the actual structure we need to handle
                                     sample_candle = candles[0]
                                     if 'mid' in sample_candle:
-                                        st.success("✅ Found 'mid' format - dashboard will handle this!")
+                                        st.success("Found 'mid' format - dashboard will handle this!")
                                     elif 'bid' in sample_candle:
-                                        st.success("✅ Found 'bid' format - dashboard will handle this!")
+                                        st.success("Found 'bid' format - dashboard will handle this!")
                                     elif 'open' in sample_candle:
-                                        st.success("✅ Found direct OHLC format - dashboard will handle this!")
+                                        st.success("Found direct OHLC format - dashboard will handle this!")
                                     else:
-                                        st.warning("⚠️ Unknown format - may need dashboard adjustment")
+                                        st.warning("Unknown format - may need dashboard adjustment")
                 
                 # Show structure analysis
-                with st.expander("🔍 Full Response Structure"):
+                with st.expander("Full Response Structure"):
                     st.json(result)
                     
             except Exception as e:
@@ -493,9 +499,10 @@ def main() -> None:
     st.sidebar.header("🎛️ Controls")
     
     # Auto-refresh toggle
-    auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh (5s)", value=True)
+    seconds_to_refresh = 30
+    auto_refresh = st.sidebar.checkbox(f"🔄 Auto Refresh ({seconds_to_refresh}s)", value=True)
     if auto_refresh:
-        time.sleep(5)
+        time.sleep(seconds_to_refresh)
         st.rerun()
     
     # Manual refresh button
