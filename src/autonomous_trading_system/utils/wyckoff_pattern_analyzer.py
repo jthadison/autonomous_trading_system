@@ -21,7 +21,7 @@ from enum import Enum
 
 from src.config.logging_config import logger
 from src.database.manager import db_manager
-from src.database.models import PatternDetection, MarketContext, WyckoffPattern, MarketRegime
+from src.database.models import PatternDetection,  WyckoffPattern, MarketRegime
 
 class WyckoffPhase(Enum):
     """Wyckoff phases for accumulation/distribution"""

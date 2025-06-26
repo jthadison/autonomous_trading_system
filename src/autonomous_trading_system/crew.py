@@ -7,6 +7,7 @@ import asyncio
 import sys
 from pathlib import Path
 from datetime import datetime
+import time
 from typing import Dict, List, Any
 
 from crewai.utilities.events.third_party.agentops_listener import agentops
@@ -14,7 +15,7 @@ from crewai.utilities.events.third_party.agentops_listener import agentops
 # Add src to path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from autonomous_trading_system.trading_dashboard import get_historical_data
+#from autonomous_trading_system.trading_dashboard import get_historical_data
 from autonomous_trading_system.utils.wyckoff_pattern_analyzer import wyckoff_analyzer
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
@@ -267,6 +268,7 @@ class AutonomousTradingSystem():
             process=Process.sequential,
             verbose=True,
             memory=True,
+            step_callback=lambda step: time.sleep(3)
         )
 
     # Optional: Add execution monitoring methods
@@ -291,7 +293,7 @@ class AutonomousTradingSystem():
                 logger.error("Portfolio monitoring error", error=str(e))
                 await asyncio.sleep(check_interval_seconds)
 
-    def execute_trading_session(self, symbol_name: str = "BTC_USD"):
+    def execute_trading_session(self, symbol_name: str = "EUR_USD"):
         """Execute a complete trading session with monitoring"""
         try:
             # Set up inputs for the crew

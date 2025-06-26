@@ -1,5 +1,5 @@
 """
-Enhanced Database Manager for Autonomous Trading System - CONCURRENCY FIXED
+Enhanced Database Manager for Autonomous Trading System - CORRECTED ASYNC POOL FIX
 Handles database connections with proper async session management
 """
 import asyncio
@@ -8,13 +8,13 @@ import sys
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncGenerator, Optional
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy import create_engine, inspect, text, Engine
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession, AsyncEngine
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.pool import QueuePool, NullPool, StaticPool
 import time
-from typing import AsyncGenerator
 
 load_dotenv(override=True)
 
@@ -31,10 +31,10 @@ class AsyncDatabaseManager:
     """Thread-safe database manager with proper async session handling"""
 
     def __init__(self):
-        self.engine = None
-        self.async_engine = None
-        self.SessionLocal = None
-        self.AsyncSessionLocal = None
+        self.engine: Optional[Engine] = None
+        self.async_engine: Optional[AsyncEngine] = None
+        self.SessionLocal: Optional[sessionmaker] = None
+        self.AsyncSessionLocal: Optional[async_sessionmaker] = None
         self._initialized = False
         self._async_initialized = False
         self._lock = threading.Lock()
@@ -51,13 +51,15 @@ class AsyncDatabaseManager:
                 logger.info(f"Database URL: {database_url}")
                 
                 if database_url:
+                    # Use QueuePool for sync connections with pool parameters
                     self.engine = create_engine(
                         database_url,
                         poolclass=QueuePool,
                         pool_size=10,
                         max_overflow=20,
                         pool_pre_ping=True,
-                        pool_recycle=3600
+                        pool_recycle=3600,
+                        echo=False  # Set to True for SQL debugging
                     )
                 else:
                     # Fallback to SQLite for easy development
@@ -65,73 +67,74 @@ class AsyncDatabaseManager:
                     db_path.parent.mkdir(exist_ok=True)
                     sqlite_url = f"sqlite:///{db_path}"
                     self.engine = create_engine(
-                        sqlite_url, 
-                        echo=False,  # Reduce log noise
-                        poolclass=QueuePool,
-                        pool_size=10,
-                        max_overflow=20
+                        sqlite_url,
+                        poolclass=StaticPool,
+                        pool_pre_ping=True,
+                        echo=False
                     )
-                    logger.info("Using SQLite database for development", path=str(db_path))
                 
+                # Create session factory
                 self.SessionLocal = sessionmaker(
-                    autocommit=False, 
-                    autoflush=False, 
+                    autocommit=False,
+                    autoflush=False,
                     bind=self.engine
                 )
                 
-                # Create all tables
+                # Create tables if they don't exist
                 Base.metadata.create_all(bind=self.engine)
                 
                 self._initialized = True
                 logger.info("✅ Sync database initialized successfully")
-
+                
             except Exception as e:
-                logger.error("❌ Failed to initialize database", error=str(e))
+                logger.error(f"❌ Failed to initialize sync database: {e}")
                 raise
 
     async def initialize_async_db(self):
-        """Initialize asynchronous database connection with proper pooling"""
+        """Initialize asynchronous database connection with proper pool"""
         if self._async_initialized:
             return
             
         try:
             database_url = os.getenv("DATABASE_URL")
-
+            
             if database_url:
-                async_url = database_url.replace(
-                    "postgresql://", "postgresql+asyncpg://"
-                )
+                # Convert PostgreSQL URL to async format
+                if database_url.startswith("postgresql://"):
+                    async_database_url = database_url.replace("postgresql://", "postgresql+asyncpg://")
+                elif database_url.startswith("postgresql+psycopg2://"):
+                    async_database_url = database_url.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
+                else:
+                    async_database_url = database_url
+                
+                # Use NullPool for async connections - NO pool parameters!
                 self.async_engine = create_async_engine(
-                    async_url,
-                    poolclass=QueuePool,
-                    pool_size=15,  # Larger pool for async operations
-                    max_overflow=25,
-                    pool_pre_ping=True,
-                    pool_recycle=3600,
-                    echo=False  # Reduce log noise
+                    async_database_url,
+                    poolclass=NullPool,  # NullPool doesn't use pool_size/max_overflow
+                    echo=False,  # Set to True for SQL debugging
+                    future=True
                 )
             else:
-                # SQLite async
+                # Fallback to async SQLite
                 db_path = Path("data") / "trading_system.db"
                 db_path.parent.mkdir(exist_ok=True)
-                async_url = f"sqlite+aiosqlite:///{db_path}"
+                sqlite_url = f"sqlite+aiosqlite:///{db_path}"
+                
                 self.async_engine = create_async_engine(
-                    async_url, 
+                    sqlite_url,
+                    poolclass=StaticPool,
                     echo=False,
-                    poolclass=QueuePool,
-                    pool_size=15,
-                    max_overflow=25
+                    future=True
                 )
-
+            
+            # Create async session factory
             self.AsyncSessionLocal = async_sessionmaker(
-                autocommit=False, 
-                autoflush=False, 
-                bind=self.async_engine,
+                self.async_engine,
                 class_=AsyncSession,
-                expire_on_commit=False  # Important for async operations
+                expire_on_commit=False
             )
-
-            # Create all tables
+            
+            # Create tables if they don't exist (async)
             async with self.async_engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
             
@@ -139,114 +142,102 @@ class AsyncDatabaseManager:
             logger.info("✅ Async database initialized successfully")
             
         except Exception as e:
-            logger.error("❌ Failed to initialize async database", error=str(e))
+            logger.error(f"❌ Failed to initialize async database: {e}")
             raise
+
+    def test_connection(self) -> bool:
+        """Test synchronous database connection"""
+        try:
+            if not self._initialized or self.engine is None:
+                return False
+                
+            with self.engine.connect() as connection:
+                result = connection.execute(text("SELECT 1"))
+                result.fetchone()
+                
+            logger.info("✅ Database connection test successful")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Database connection test failed: {e}")
+            return False
+
+    async def test_async_connection(self) -> bool:
+        """Test asynchronous database connection"""
+        try:
+            if not self._async_initialized or self.async_engine is None:
+                return False
+                
+            async with self.async_engine.connect() as connection:
+                result = await connection.execute(text("SELECT 1"))
+                result.fetchone()
+                
+            logger.info("✅ Async database connection test successful")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Async database connection test failed: {e}")
+            return False
+
+    def get_session(self) -> Session:
+        """Get database session (synchronous)"""
+        if not self._initialized:
+            self.initialize_sync_db()
+        if self.SessionLocal is None:
+            raise RuntimeError("Session factory not initialized")
+        return self.SessionLocal()
 
     @asynccontextmanager
     async def get_async_session(self) -> AsyncGenerator[AsyncSession, None]:
-        """Get async database session with proper cleanup and error handling"""
+        """Get async database session with proper cleanup"""
         if not self._async_initialized:
             await self.initialize_async_db()
-        
-        if not self.AsyncSessionLocal:
-            raise RuntimeError("AsyncSessionLocal not initialized")
-        
-        # Create a new session for each request
-        session = self.AsyncSessionLocal()
-        
-        try:
-            yield session
-            # Only commit if no exception occurred
-            await session.commit()
-            logger.debug("Database session committed successfully")
             
-        except Exception as e:
-            # Rollback on any exception
-            await session.rollback()
-            logger.error(f"Database session rolled back due to error: {e}")
-            raise
+        if self.AsyncSessionLocal is None:
+            raise RuntimeError("Async session factory not initialized")
             
-        finally:
-            # Always close the session
-            await session.close()
-            logger.debug("Database session closed")
+        async with self.AsyncSessionLocal() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()
 
     async def safe_db_operation(self, operation_func, *args, **kwargs):
-        """Execute database operation with retry logic and proper error handling"""
+        """Execute database operation with proper error handling"""
         max_retries = 3
-        retry_delay = 0.1
+        retry_delay = 1
         
         for attempt in range(max_retries):
             try:
                 async with self.get_async_session() as session:
                     result = await operation_func(session, *args, **kwargs)
+                    await session.commit()
                     return result
                     
             except Exception as e:
                 if attempt < max_retries - 1:
                     logger.warning(f"Database operation failed (attempt {attempt + 1}), retrying: {e}")
-                    await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                    await asyncio.sleep(retry_delay * (attempt + 1))
                 else:
                     logger.error(f"Database operation failed after {max_retries} attempts: {e}")
                     raise
 
-    def get_session(self) -> Session:
-        """Get synchronous database session"""
-        if not self._initialized:
-            self.initialize_sync_db()
-        
-        if not self.SessionLocal:
-            raise RuntimeError("SessionLocal not initialized")
-            
-        return self.SessionLocal()
-
-    async def test_async_connection(self) -> bool:
-        """Test async database connection"""
-        try:
-            async with self.get_async_session() as session:
-                result = await session.execute(text("SELECT 1"))
-                row = result.fetchone()
-                if row and row[0] == 1:
-                    logger.info("✅ Async database connection test successful")
-                    return True
-                else:
-                    logger.error("❌ Async database connection test failed")
-                    return False
-        except Exception as e:
-            logger.error("❌ Async database connection test failed", error=str(e))
-            return False
-
-    def test_connection(self) -> bool:
-        """Test database connection"""
+    def get_table_info(self) -> dict:
+        """Get information about database tables"""
         try:
             if not self._initialized:
-                self.initialize_sync_db()
-                
-            with self.get_session() as session:
-                result = session.execute(text("SELECT 1"))
-                row = result.fetchone()
-                if row and row[0] == 1:
-                    logger.info("✅ Database connection test successful")
-                    return True
-                else:
-                    logger.error("❌ Database connection test failed")
-                    return False
-        except Exception as e:
-            logger.error("❌ Database connection test failed", error=str(e))
-            return False
-
-    def get_table_info(self) -> dict:
-        """Get database table information"""
-        if not self._initialized:
-            return {}
-            
-        try:
-            inspector = inspect(self.engine)
-            if inspector is None:
-                logger.error("❌ Database inspector is None")
                 return {}
+                
+            inspector = inspect(self.engine)
         except Exception as e:
             logger.error("❌ Failed to create database inspector")
+            return {}
+            
+        if inspector is None:
+            logger.error("❌ Database inspector is None")
             return {}
             
         tables = inspector.get_table_names()

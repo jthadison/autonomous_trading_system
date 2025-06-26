@@ -802,6 +802,7 @@ if __name__ == "__main__":
     print("2. Test integration only")
     
     choice = input("Enter choice (1-2): ").strip()
+    symbol_name = "EUR_USD"
     
     if choice == "1":
         print("\n🚀 Starting integrated paper trading...")
@@ -813,7 +814,7 @@ if __name__ == "__main__":
             await engine.initialize()
             
             # Test getting a recommendation
-            recommendation = await engine.get_crew_recommendation("EUR_USD")
+            recommendation = await engine.get_crew_recommendation(symbol_name)
             if recommendation:
                 print(f"✅ Got recommendation: {recommendation.action} (confidence: {recommendation.confidence:.1f}%)")
             else:

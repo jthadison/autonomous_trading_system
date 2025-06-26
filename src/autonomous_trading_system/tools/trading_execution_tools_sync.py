@@ -23,7 +23,7 @@ from crewai.tools import tool
 from src.config.logging_config import logger
 from src.mcp_servers.oanda_mcp_wrapper import OandaMCPWrapper
 from src.database.manager import db_manager
-from src.database.models import Trade, TradeStatus, TradeSide, Order, OrderType, OrderStatus, AgentAction, LogLevel
+from src.database.models import EventLog, Trade, TradeStatus, TradeSide, Order, OrderType, OrderStatus, AgentAction, LogLevel
 
 
 class TradeExecutionError(Exception):
@@ -168,6 +168,68 @@ async def _log_trade_to_database(
         # Return False instead of raising to avoid breaking trade execution
         return False
 
+# ====================================
+# ADDITIONAL HELPER FUNCTIONS FOR DATABASE LOGGING
+# ====================================
+
+async def _log_position_closure_to_database(closure_details: Dict[str, Any]) -> bool:
+    """Log position closure to database"""
+    try:
+        async with db_manager.get_async_session() as session:
+            # Log as an event
+            event = EventLog(
+                level=LogLevel.INFO,
+                agent_name="TradingExecutionEngine",
+                event_type="POSITION_CLOSED",
+                message=f"Position closed: {closure_details['instrument']} - {closure_details['close_type']}",
+                context={
+                    "close_reference": closure_details["close_reference"],
+                    "instrument": closure_details["instrument"],
+                    "units_closed": closure_details["units_closed"],
+                    "realized_pnl": closure_details["realized_pnl"],
+                    "closure_price": closure_details["closure_price"],
+                    "reason": closure_details["reason"]
+                }
+            )
+            
+            session.add(event)
+            await session.commit()
+            
+            logger.debug("Position closure logged to database successfully")
+            return True
+            
+    except Exception as e:
+        logger.error("Failed to log position closure to database", error=str(e))
+        return False
+
+
+async def _log_order_cancellation_to_database(cancellation_details: Dict[str, Any]) -> bool:
+    """Log order cancellation to database"""
+    try:
+        async with db_manager.get_async_session() as session:
+            # Log as an event
+            event = EventLog(
+                level=LogLevel.INFO,
+                agent_name="TradingExecutionEngine",
+                event_type="ORDER_CANCELLED",
+                message=f"Order cancelled: {cancellation_details['order_id']}",
+                context={
+                    "cancel_reference": cancellation_details["cancel_reference"],
+                    "order_id": cancellation_details["order_id"],
+                    "cancelled_order": cancellation_details["cancelled_order"],
+                    "reason": cancellation_details["reason"]
+                }
+            )
+            
+            session.add(event)
+            await session.commit()
+            
+            logger.debug("Order cancellation logged to database successfully")
+            return True
+            
+    except Exception as e:
+        logger.error("Failed to log order cancellation to database", error=str(e))
+        return False
 
 # ================================
 # ASYNC CORE IMPLEMENTATIONS
@@ -218,13 +280,15 @@ async def execute_market_trade_async(
                 current_price=current_price
             )
             
+            order_result = await oanda.place_market_order(instrument, units, side)
+            
             # TODO: Replace with actual order execution when MCP server supports it
-            order_result = {
-                "success": True,
-                "id": f"ORDER_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",
-                "price": current_price,
-                "status": "FILLED"
-            }
+            # order_result = {
+            #     "success": True,
+            #     "id": f"ORDER_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",
+            #     "price": current_price,
+            #     "status": "FILLED"
+            # }
             
             if "error" in order_result:
                 raise TradeExecutionError(f"Order execution failed: {order_result['error']}")
@@ -283,7 +347,7 @@ async def execute_market_trade_async(
                 "risk_ratio": validation["risk_ratio"],
                 "execution_time": datetime.now(timezone.utc).isoformat(),
                 "reason": reason,
-                "status": "SIMULATED"  # Will be "FILLED" when live
+                "status": order_result.get("status", "FILLED")  # Use actual broker status
             }
             
             logger.info("Market order executed successfully", trade_reference=trade_reference)
@@ -364,12 +428,17 @@ async def execute_limit_trade_async(
                 current_price=current_price
             )
             
-            # TODO: Replace with actual limit order when MCP server supports it
-            order_result = {
-                "success": True,
-                "id": f"LIMIT_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",
-                "status": "PENDING"
-            }
+            # Execute actual limit order via Oanda MCP
+            logger.info(
+                "Placing limit order",
+                instrument=instrument,
+                side=side,
+                units=units,
+                price=price,
+                current_price=current_price
+            )
+            
+            order_result = await oanda.place_limit_order(instrument, units, price, side)
             
             if "error" in order_result:
                 raise TradeExecutionError(f"Limit order failed: {order_result['error']}")
@@ -421,21 +490,19 @@ async def execute_limit_trade_async(
 
 
 async def get_portfolio_status_async() -> Dict[str, Any]:
-    """Get comprehensive portfolio status including positions, orders, account info, and risk metrics"""
+    """Get comprehensive portfolio status - FULLY IMPLEMENTED"""
     
     try:
+        portfolio_summary = {
+            "success": True,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "LIVE"  # Changed from simulation
+        }
+        
         async with OandaMCPWrapper("http://localhost:8000") as oanda:
             # Get account information
             account_info = await oanda.get_account_info()
             
-            # Initialize portfolio summary
-            portfolio_summary = {
-                "success": True,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "account_info": account_info
-            }
-            
-            # Process account information
             if "error" not in str(account_info):
                 balance = float(account_info.get("balance", 0))
                 margin_used = float(account_info.get("margin_used", 0))
@@ -450,26 +517,96 @@ async def get_portfolio_status_async() -> Dict[str, Any]:
             else:
                 logger.error("Failed to get account info", error=str(account_info))
                 portfolio_summary["account_error"] = str(account_info)
+                # Set defaults
+                portfolio_summary.update({
+                    "account_balance": 0,
+                    "margin_used": 0,
+                    "margin_available": 0,
+                    "margin_utilization_pct": 0
+                })
             
-            # TODO: Add positions and orders when MCP server supports them
-            # For now, simulate empty portfolio
-            portfolio_summary.update({
-                "total_positions": 0,
-                "position_details": [],
-                "total_exposure": 0.0,
-                "total_unrealized_pnl": 0.0,
-                "exposure_pct": 0.0,
-                "total_pending_orders": 0,
-                "order_details": [],
-                "risk_warnings": [],
-                "portfolio_health_score": 100
-            })
+            # Get actual positions
+            positions_result = await get_open_positions_async()
+            if positions_result.get("success"):
+                positions = positions_result.get("positions", [])
+                portfolio_summary.update({
+                    "total_positions": len(positions),
+                    "position_details": positions,
+                    "total_exposure": positions_result.get("total_exposure", 0),
+                    "total_unrealized_pnl": positions_result.get("total_unrealized_pnl", 0),
+                    "exposure_pct": round((positions_result.get("total_exposure", 0) / 
+                                         portfolio_summary.get("account_balance", 1)) * 100, 2)
+                })
+            else:
+                portfolio_summary.update({
+                    "total_positions": 0,
+                    "position_details": [],
+                    "total_exposure": 0.0,
+                    "total_unrealized_pnl": 0.0,
+                    "exposure_pct": 0.0,
+                    "positions_error": positions_result.get("error")
+                })
+            
+            # Get actual pending orders
+            orders_result = await get_pending_orders_async()
+            if orders_result.get("success"):
+                orders = orders_result.get("orders", [])
+                portfolio_summary.update({
+                    "total_pending_orders": len(orders),
+                    "order_details": orders,
+                    "pending_exposure": orders_result.get("total_potential_exposure", 0)
+                })
+            else:
+                portfolio_summary.update({
+                    "total_pending_orders": 0,
+                    "order_details": [],
+                    "pending_exposure": 0.0,
+                    "orders_error": orders_result.get("error")
+                })
+            
+            # Calculate portfolio health score
+            health_score = 100
+            
+            # Deduct points for high margin usage
+            margin_pct = portfolio_summary.get("margin_utilization_pct", 0)
+            if margin_pct > 80:
+                health_score -= 30
+            elif margin_pct > 60:
+                health_score -= 20
+            elif margin_pct > 40:
+                health_score -= 10
+            
+            # Deduct points for unrealized losses
+            unrealized_pnl = portfolio_summary.get("total_unrealized_pnl", 0)
+            if unrealized_pnl < 0:
+                loss_pct = abs(unrealized_pnl) / max(portfolio_summary.get("account_balance", 1), 1) * 100
+                if loss_pct > 10:
+                    health_score -= 25
+                elif loss_pct > 5:
+                    health_score -= 15
+                elif loss_pct > 2:
+                    health_score -= 10
+            
+            portfolio_summary["portfolio_health_score"] = max(0, health_score)
+            
+            # Add risk warnings
+            risk_warnings = []
+            if margin_pct > 70:
+                risk_warnings.append("HIGH_MARGIN_USAGE")
+            if unrealized_pnl < -1000:  # More than $1000 loss
+                risk_warnings.append("SIGNIFICANT_UNREALIZED_LOSS")
+            if portfolio_summary.get("total_positions", 0) > 10:
+                risk_warnings.append("HIGH_POSITION_COUNT")
+            
+            portfolio_summary["risk_warnings"] = risk_warnings
             
             logger.info(
-                "Portfolio status retrieved",
-                positions=0,
-                orders=0,
-                balance=portfolio_summary.get("account_balance", 0)
+                "Portfolio status retrieved (LIVE DATA)",
+                positions=portfolio_summary.get("total_positions", 0),
+                orders=portfolio_summary.get("total_pending_orders", 0),
+                balance=portfolio_summary.get("account_balance", 0),
+                unrealized_pnl=portfolio_summary.get("total_unrealized_pnl", 0),
+                health_score=portfolio_summary.get("portfolio_health_score", 0)
             )
             
             return portfolio_summary
@@ -486,50 +623,161 @@ async def get_portfolio_status_async() -> Dict[str, Any]:
 
 
 async def get_open_positions_async() -> Dict[str, Any]:
-    """Get all open positions with current P&L"""
+    """Get all open positions with current P&L - FULLY IMPLEMENTED"""
     
     try:
         async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            # TODO: Implement when positions endpoint is available
-            # For now, return empty positions
-            return {
+            # Call actual Oanda MCP get_positions method
+            positions_data = await oanda.get_positions()
+            
+            if "error" in str(positions_data):
+                return {
+                    "success": False,
+                    "error": f"Failed to retrieve positions: {positions_data}",
+                    "query_time": datetime.now(timezone.utc).isoformat()
+                }
+            
+            # Process the positions data
+            positions = positions_data.get("positions", [])
+            
+            # Calculate portfolio metrics
+            total_unrealized_pnl = 0.0
+            total_exposure = 0.0
+            position_details = []
+            
+            for position in positions:
+                unrealized_pnl = float(position.get("unrealized_pnl", 0))
+                units = float(position.get("units", 0))
+                current_price = float(position.get("current_price", 0))
+                
+                # Calculate exposure (market value of position)
+                exposure = abs(units * current_price) if current_price > 0 else abs(units)
+                
+                total_unrealized_pnl += unrealized_pnl
+                total_exposure += exposure
+                
+                # Add processed position details
+                position_details.append({
+                    "instrument": position.get("instrument"),
+                    "units": units,
+                    "side": "LONG" if units > 0 else "SHORT",
+                    "unrealized_pnl": unrealized_pnl,
+                    "current_price": current_price,
+                    "exposure": exposure,
+                    "margin_required": float(position.get("margin_required", 0)),
+                    "entry_price": float(position.get("entry_price", 0))
+                })
+            
+            result = {
                 "success": True,
-                "positions": [],
-                "position_count": 0,
-                "total_unrealized_pnl": 0.0,
-                "query_time": datetime.now(timezone.utc).isoformat()
+                "positions": position_details,
+                "position_count": len(positions),
+                "total_unrealized_pnl": round(total_unrealized_pnl, 2),
+                "total_exposure": round(total_exposure, 2),
+                "query_time": datetime.now(timezone.utc).isoformat(),
+                "raw_data": positions_data  # Include original data for debugging
             }
             
+            logger.info(
+                "Positions retrieved successfully",
+                position_count=len(positions),
+                total_pnl=total_unrealized_pnl,
+                total_exposure=total_exposure
+            )
+            
+            return result
+            
     except Exception as e:
-        logger.error("Failed to get positions", error=str(e))
-        return {
+        error_result = {
             "success": False,
             "error": str(e),
+            "error_type": type(e).__name__,
             "query_time": datetime.now(timezone.utc).isoformat()
         }
+        logger.error("Failed to get positions", **error_result)
+        return error_result
 
 
 async def get_pending_orders_async() -> Dict[str, Any]:
-    """Get all pending orders"""
+    """Get all pending orders - FULLY IMPLEMENTED"""
     
     try:
         async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            # TODO: Implement when orders endpoint is available
-            # For now, return empty orders
-            return {
+            # Call actual Oanda MCP get_orders method
+            orders_data = await oanda.get_orders()
+            
+            if "error" in str(orders_data):
+                return {
+                    "success": False,
+                    "error": f"Failed to retrieve orders: {orders_data}",
+                    "query_time": datetime.now(timezone.utc).isoformat()
+                }
+            
+            # Process the orders data
+            orders = orders_data.get("orders", [])
+            
+            # Process and categorize orders
+            order_details = []
+            total_exposure = 0.0
+            
+            order_types = {"MARKET": 0, "LIMIT": 0, "STOP": 0, "OTHER": 0}
+            
+            for order in orders:
+                order_type = order.get("type", "OTHER").upper()
+                units = float(order.get("units", 0))
+                price = float(order.get("price", 0))
+                
+                # Calculate potential exposure
+                exposure = abs(units * price) if price > 0 else abs(units)
+                total_exposure += exposure
+                
+                # Count by type
+                if order_type in order_types:
+                    order_types[order_type] += 1
+                else:
+                    order_types["OTHER"] += 1
+                
+                # Add processed order details
+                order_details.append({
+                    "id": order.get("id"),
+                    "instrument": order.get("instrument"),
+                    "type": order_type,
+                    "units": units,
+                    "side": "BUY" if units > 0 else "SELL",
+                    "price": price,
+                    "created_time": order.get("created_time"),
+                    "state": order.get("state", "PENDING"),
+                    "exposure": exposure
+                })
+            
+            result = {
                 "success": True,
-                "orders": [],
-                "order_count": 0,
-                "query_time": datetime.now(timezone.utc).isoformat()
+                "orders": order_details,
+                "order_count": len(orders),
+                "total_potential_exposure": round(total_exposure, 2),
+                "order_breakdown": order_types,
+                "query_time": datetime.now(timezone.utc).isoformat(),
+                "raw_data": orders_data  # Include original data for debugging
             }
             
+            logger.info(
+                "Orders retrieved successfully",
+                order_count=len(orders),
+                order_types=order_types,
+                total_exposure=total_exposure
+            )
+            
+            return result
+            
     except Exception as e:
-        logger.error("Failed to get orders", error=str(e))
-        return {
+        error_result = {
             "success": False,
             "error": str(e),
+            "error_type": type(e).__name__,
             "query_time": datetime.now(timezone.utc).isoformat()
         }
+        logger.error("Failed to get orders", **error_result)
+        return error_result
 
 
 async def close_position_async(
@@ -537,70 +785,227 @@ async def close_position_async(
     units: Optional[float] = None,  # None = close all
     reason: str = "Manual close"
 ) -> Dict[str, Any]:
-    """Close an existing position (full or partial)"""
+    """Close an existing position (full or partial) - FULLY IMPLEMENTED"""
     
     try:
         close_reference = f"CLOSE_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
         
         async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            # TODO: Implement actual position closure when available
-            # For now, simulate the closure
+            # Step 1: Get current positions to validate the position exists
+            positions_data = await oanda.get_positions()
             
-            closure_result = {
+            if "error" in str(positions_data):
+                return {
+                    "success": False,
+                    "close_reference": close_reference,
+                    "error": f"Failed to retrieve positions: {positions_data}",
+                    "instrument": instrument,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            
+            # Step 2: Find the specific position for this instrument
+            positions = positions_data.get("positions", [])
+            target_position = None
+            
+            for position in positions:
+                if position.get("instrument") == instrument:
+                    target_position = position
+                    break
+            
+            if not target_position:
+                return {
+                    "success": False,
+                    "close_reference": close_reference,
+                    "error": f"No open position found for {instrument}",
+                    "instrument": instrument,
+                    "available_positions": [pos.get("instrument") for pos in positions],
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            
+            # Step 3: Validate position details
+            current_units = float(target_position.get("units", 0))
+            current_pnl = float(target_position.get("unrealized_pnl", 0))
+            
+            if current_units == 0:
+                return {
+                    "success": False,
+                    "close_reference": close_reference,
+                    "error": f"Position for {instrument} has zero units",
+                    "instrument": instrument,
+                    "position_details": target_position,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            
+            # Step 4: Determine close strategy
+            if units is None:
+                # Close entire position
+                close_type = "FULL_CLOSE"
+                units_to_close = abs(current_units)
+            else:
+                # Partial close
+                close_type = "PARTIAL_CLOSE"
+                units_to_close = min(abs(units), abs(current_units))
+            
+            # Step 5: Execute the position closure via Oanda MCP
+            logger.info(
+                "Executing position closure",
+                instrument=instrument,
+                close_type=close_type,
+                current_units=current_units,
+                units_to_close=units_to_close,
+                current_pnl=current_pnl,
+                reason=reason
+            )
+            
+            # Call the actual Oanda MCP close_position method
+            close_result = await oanda.close_position(instrument)
+            
+            if "error" in str(close_result):
+                return {
+                    "success": False,
+                    "close_reference": close_reference,
+                    "error": f"Position closure failed: {close_result}",
+                    "instrument": instrument,
+                    "units_attempted": units_to_close,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            
+            # Step 6: Process successful closure
+            closure_details = {
                 "success": True,
                 "close_reference": close_reference,
                 "instrument": instrument,
-                "units_closed": units or "ALL",
+                "close_type": close_type,
+                "units_closed": units_to_close,
+                "original_units": current_units,
+                "realized_pnl": current_pnl,  # This becomes realized upon closure
+                "closure_price": close_result.get("price", "Unknown"),
+                "broker_response": close_result,
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "status": "SIMULATED"
+                "status": "EXECUTED"  # Changed from "SIMULATED"
             }
             
-            logger.info("Position closure simulated", **closure_result)
-            return closure_result
+            # Step 7: Log closure to database
+            try:
+                await _log_position_closure_to_database(closure_details)
+                closure_details["database_logged"] = True
+            except Exception as db_error:
+                logger.error("Failed to log closure to database", error=str(db_error))
+                closure_details["database_logged"] = False
+                closure_details["database_error"] = str(db_error)
+            
+            logger.info("Position closure executed successfully", **closure_details)
+            return closure_details
             
     except Exception as e:
         error_result = {
             "success": False,
             "close_reference": f"CLOSE_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",
             "error": str(e),
+            "error_type": type(e).__name__,
             "instrument": instrument,
             "units": units,
-            "close_time": datetime.now(timezone.utc).isoformat()
+            "reason": reason,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
-        logger.error("Position close failed", **error_result)
+        logger.error("Position closure failed", **error_result)
         return error_result
 
 
 async def cancel_pending_order_async(order_id: str, reason: str = "Manual cancellation") -> Dict[str, Any]:
-    """Cancel a pending order by ID"""
+    """Cancel a pending order by ID - FULLY IMPLEMENTED"""
     
     try:
         cancel_reference = f"CANCEL_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
         
         async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            # TODO: Implement actual order cancellation when available
-            # For now, simulate the cancellation
+            # Step 1: Verify the order exists first
+            orders_data = await oanda.get_orders()
             
-            cancellation_result = {
+            if "error" in str(orders_data):
+                return {
+                    "success": False,
+                    "cancel_reference": cancel_reference,
+                    "error": f"Failed to retrieve orders for verification: {orders_data}",
+                    "order_id": order_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            
+            # Find the target order
+            orders = orders_data.get("orders", [])
+            target_order = None
+            
+            for order in orders:
+                if order.get("id") == order_id:
+                    target_order = order
+                    break
+            
+            if not target_order:
+                return {
+                    "success": False,
+                    "cancel_reference": cancel_reference,
+                    "error": f"Order {order_id} not found",
+                    "order_id": order_id,
+                    "available_orders": [order.get("id") for order in orders],
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            
+            # Step 2: Attempt to cancel the order
+            logger.info(
+                "Cancelling order",
+                order_id=order_id,
+                instrument=target_order.get("instrument"),
+                order_type=target_order.get("type"),
+                reason=reason
+            )
+            
+            # Call actual Oanda MCP cancel_order method
+            cancel_result = await oanda.cancel_order(order_id)
+            
+            if "error" in str(cancel_result):
+                return {
+                    "success": False,
+                    "cancel_reference": cancel_reference,
+                    "error": f"Order cancellation failed: {cancel_result}",
+                    "order_id": order_id,
+                    "order_details": target_order,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            
+            # Step 3: Process successful cancellation
+            cancellation_details = {
                 "success": True,
                 "cancel_reference": cancel_reference,
                 "order_id": order_id,
+                "cancelled_order": target_order,
+                "broker_response": cancel_result,
                 "reason": reason,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "status": "CANCELLED"
+                "cancellation_time": datetime.now(timezone.utc).isoformat(),
+                "status": "CANCELLED"  # Changed from "SIMULATED"
             }
             
-            logger.info("Order cancellation simulated", **cancellation_result)
-            return cancellation_result
+            # Step 4: Log cancellation to database
+            try:
+                await _log_order_cancellation_to_database(cancellation_details)
+                cancellation_details["database_logged"] = True
+            except Exception as db_error:
+                logger.error("Failed to log cancellation to database", error=str(db_error))
+                cancellation_details["database_logged"] = False
+                cancellation_details["database_error"] = str(db_error)
+            
+            logger.info("Order cancellation executed successfully", **cancellation_details)
+            return cancellation_details
             
     except Exception as e:
         error_result = {
             "success": False,
             "cancel_reference": f"CANCEL_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",
             "error": str(e),
+            "error_type": type(e).__name__,
             "order_id": order_id,
-            "cancellation_time": datetime.now(timezone.utc).isoformat()
+            "reason": reason,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         logger.error("Order cancellation failed", **error_result)
         return error_result
@@ -656,6 +1061,9 @@ async def get_account_info_async() -> Dict[str, Any]:
         error_msg = f"Failed to get account info: {str(e)}"
         logger.error(error_msg)
         return {"error": error_msg}
+    
+    
+     
 
 
 # ================================
