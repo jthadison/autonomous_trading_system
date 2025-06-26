@@ -9,7 +9,7 @@ wyckoff_analysis_task:
         5. **Market Regime Assessment**: Determine if the market is trending, ranging, or volatile
         6. **Cause and Effect**: Calculate potential price targets based on time spent in accumulation/distribution
         
-        Use the analyze_wyckoff_patterns tool with 15-minute timeframe data.
+        Use the 15-minute timeframe data.
         Provide detailed confidence levels for each aspect of the analysis.
         Focus on actionable insights for trading decisions.
         

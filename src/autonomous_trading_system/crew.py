@@ -36,7 +36,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 # Import the new trading execution tools
-from src.autonomous_trading_system.tools.trading_execution_tools import (
+from src.autonomous_trading_system.tools.trading_execution_tools_sync import (
     execute_market_trade,
     execute_limit_trade,
     cancel_pending_order,
@@ -193,10 +193,10 @@ class AutonomousTradingSystem():
             config=self.agents_config['wyckoff_market_analyst'], # type: ignore[index]
             tools=[
                 get_live_price,
-                get_historical_data, 
-                analyze_wyckoff_patterns
+                get_historical_data
             ],
-            verbose=True
+            verbose=True,
+            max_iter=3
         )
         
     @agent
@@ -211,7 +211,8 @@ class AutonomousTradingSystem():
                 get_open_positions,
                 get_pending_orders
             ],
-            verbose=True
+            verbose=True,
+            max_iter=3
         )
         
     @agent
@@ -235,7 +236,8 @@ class AutonomousTradingSystem():
                 execute_limit_trade,
                 cancel_pending_order
             ],
-            verbose=True
+            verbose=True,
+            max_iter=3
         )
 
     @task

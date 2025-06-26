@@ -1,9 +1,9 @@
 """
-Database Models for Autonomous Trading System
-SQLAlchemy models for all trading data with comprehensive logging
+Database Models for Autonomous Trading System - FIXED VERSION
+SQLAlchemy models with datetime deprecation warnings resolved
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from sqlalchemy import Column, Integer, String, Numeric, DateTime, Text, Boolean, ForeignKey, JSON
 from sqlalchemy.ext.declarative import declarative_base
@@ -12,6 +12,11 @@ from sqlalchemy.dialects.postgresql import UUID, ENUM
 import uuid
 
 Base = declarative_base()
+
+# Helper function for timezone-aware datetime
+def utc_now():
+    """Get current UTC time in timezone-aware format"""
+    return datetime.now(timezone.utc)
 
 # Enums for type safety
 class TradeSide(str, Enum):
@@ -63,7 +68,7 @@ class Trade(Base):
     __tablename__ = 'trades'
     
     trade_id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    timestamp = Column(DateTime, nullable=False, default=utc_now)  # FIXED
     symbol = Column(String(10), nullable=False, index=True)
     side = Column(ENUM(TradeSide), nullable=False)
     quantity = Column(Numeric(15, 5), nullable=False)
@@ -90,8 +95,8 @@ class Trade(Base):
     broker_trade_id = Column(String(50), index=True)
     session_id = Column(UUID(as_uuid=True), default=uuid.uuid4)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)  # FIXED
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)  # FIXED
     
     # Relationships
     orders = relationship("Order", back_populates="trade")
@@ -104,7 +109,7 @@ class EventLog(Base):
     __tablename__ = 'events_log'
     
     event_id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utc_now, index=True)  # FIXED
     level = Column(ENUM(LogLevel), nullable=False, index=True)
     agent_name = Column(String(100), index=True)
     event_type = Column(String(50), index=True)  # SIGNAL_GENERATED, TRADE_EXECUTED, etc.
@@ -114,7 +119,7 @@ class EventLog(Base):
     session_id = Column(UUID(as_uuid=True), index=True)
     trade_id = Column(Integer, ForeignKey('trades.trade_id'))
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)  # FIXED
 
 
 class AgentAction(Base):
@@ -122,7 +127,7 @@ class AgentAction(Base):
     __tablename__ = 'agent_actions'
     
     action_id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utc_now, index=True)  # FIXED
     agent_name = Column(String(100), nullable=False, index=True)
     action_type = Column(String(50), index=True)  # ANALYZE_PATTERN, CALCULATE_RISK, etc.
     input_data = Column(JSON)  # What data the agent received
@@ -132,7 +137,7 @@ class AgentAction(Base):
     trade_id = Column(Integer, ForeignKey('trades.trade_id'))
     session_id = Column(UUID(as_uuid=True), index=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)  # FIXED
 
 
 class PerformanceMetric(Base):
@@ -140,7 +145,7 @@ class PerformanceMetric(Base):
     __tablename__ = 'performance_metrics'
     
     metric_id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utc_now, index=True)  # FIXED
     timeframe = Column(String(10), nullable=False, index=True)  # 1m, 5m, 15m, 1h, 1d, 1w
     
     # Trade statistics
@@ -166,7 +171,7 @@ class PerformanceMetric(Base):
     largest_win = Column(Numeric(10, 2))
     largest_loss = Column(Numeric(10, 2))
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)  # FIXED
 
 
 class PatternDetection(Base):
@@ -174,7 +179,7 @@ class PatternDetection(Base):
     __tablename__ = 'pattern_detections'
     
     detection_id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utc_now, index=True)  # FIXED
     symbol = Column(String(10), nullable=False, index=True)
     timeframe = Column(String(10), nullable=False, index=True)
     pattern_type = Column(ENUM(WyckoffPattern), nullable=False, index=True)
@@ -196,7 +201,7 @@ class PatternDetection(Base):
     trade_id = Column(Integer, ForeignKey('trades.trade_id'))
     trade = relationship("Trade", back_populates="pattern_detections")
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)  # FIXED
 
 
 class MarketContext(Base):
@@ -204,7 +209,7 @@ class MarketContext(Base):
     __tablename__ = 'market_context'
     
     context_id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utc_now, index=True)  # FIXED
     symbol = Column(String(10), nullable=False, index=True)
     timeframe = Column(String(10), nullable=False, index=True)
     
@@ -220,7 +225,7 @@ class MarketContext(Base):
     sentiment_score = Column(Numeric(5, 2))  # -100 to +100
     economic_events = Column(JSON)  # Upcoming news events
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)  # FIXED
 
 
 class Position(Base):
@@ -228,57 +233,56 @@ class Position(Base):
     __tablename__ = 'positions'
     
     position_id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utc_now, index=True)  # FIXED
     symbol = Column(String(10), nullable=False, index=True)
-    side = Column(String(10), nullable=False)  # long, short
+    side = Column(ENUM(TradeSide), nullable=False)
     quantity = Column(Numeric(15, 5), nullable=False)
-    entry_price = Column(Numeric(15, 5), nullable=False)
+    entry_price = Column(Numeric(15, 5))
     current_price = Column(Numeric(15, 5))
     unrealized_pnl = Column(Numeric(15, 2))
+    margin_required = Column(Numeric(15, 2))
+    
+    # Position management
     stop_loss = Column(Numeric(15, 5))
     take_profit = Column(Numeric(15, 5))
-    margin_required = Column(Numeric(15, 2))
-    swap_charges = Column(Numeric(10, 2))
+    trailing_stop = Column(Numeric(15, 5))
+    max_pnl = Column(Numeric(15, 2))  # High water mark
+    max_adverse = Column(Numeric(15, 2))  # Maximum adverse excursion
+    
+    status = Column(String(20), default="open")
     broker_position_id = Column(String(50), index=True)
-    status = Column(String(20), nullable=False, index=True)
+    trade_id = Column(Integer, ForeignKey('trades.trade_id'))
+    session_id = Column(UUID(as_uuid=True), index=True)
     
-    # Risk tracking
-    risk_amount = Column(Numeric(15, 2))  # Dollar amount at risk
-    risk_percentage = Column(Numeric(5, 2))  # % of account at risk
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)  # FIXED
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)  # FIXED
 
 
 class Order(Base):
-    """Complete order audit trail"""
+    """Order tracking with full execution details"""
     __tablename__ = 'orders'
     
     order_id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utc_now, index=True)  # FIXED
     symbol = Column(String(10), nullable=False, index=True)
     order_type = Column(ENUM(OrderType), nullable=False)
     side = Column(ENUM(TradeSide), nullable=False)
     quantity = Column(Numeric(15, 5), nullable=False)
     price = Column(Numeric(15, 5))  # For limit orders
     stop_price = Column(Numeric(15, 5))  # For stop orders
-    time_in_force = Column(String(10))  # GTC, IOC, FOK, DAY
-    status = Column(ENUM(OrderStatus), nullable=False, index=True)
     filled_quantity = Column(Numeric(15, 5), default=0)
     avg_fill_price = Column(Numeric(15, 5))
-    broker_order_id = Column(String(50), index=True)
-    
-    # Execution quality
-    slippage_pips = Column(Numeric(8, 2))  # Actual vs expected slippage
-    execution_time_ms = Column(Integer)  # Time from order to fill
     commission = Column(Numeric(10, 2))
-    reject_reason = Column(Text)
+    
+    status = Column(ENUM(OrderStatus), nullable=False, default=OrderStatus.PENDING)
+    broker_order_id = Column(String(50), index=True)
+    error_message = Column(Text)
     
     # Relationships
     trade_id = Column(Integer, ForeignKey('trades.trade_id'))
     trade = relationship("Trade", back_populates="orders")
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)  # FIXED
     filled_at = Column(DateTime)
 
 
@@ -287,7 +291,7 @@ class RiskCalculation(Base):
     __tablename__ = 'risk_calculations'
     
     calc_id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utc_now, index=True)  # FIXED
     symbol = Column(String(10), nullable=False, index=True)
     
     # Account and risk data
@@ -307,7 +311,7 @@ class RiskCalculation(Base):
     trade_id = Column(Integer, ForeignKey('trades.trade_id'))
     trade = relationship("Trade", back_populates="risk_calculations")
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)  # FIXED
 
 
 class ExecutionMetric(Base):
@@ -315,7 +319,7 @@ class ExecutionMetric(Base):
     __tablename__ = 'execution_metrics'
     
     metric_id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utc_now, index=True)  # FIXED
     symbol = Column(String(10), nullable=False, index=True)
     order_id = Column(Integer, ForeignKey('orders.order_id'))
     
@@ -330,4 +334,4 @@ class ExecutionMetric(Base):
     fill_rate = Column(Numeric(5, 2))  # % of order filled
     
     market_conditions = Column(JSON)  # Volatility, volume at execution
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)  # FIXED
