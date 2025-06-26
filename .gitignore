@@ -61,3 +61,6 @@ Desktop.ini
 backtest_results/
 live_trading_logs/
 *.pickle
+
+# Temp  Files
+/temp
