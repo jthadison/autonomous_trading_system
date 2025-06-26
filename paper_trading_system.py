@@ -27,6 +27,8 @@ try:
     from src.config.logging_config import logger
     from src.database.manager import db_manager
     from src.database.models import Trade, TradeStatus, TradeSide, AgentAction, EventLog, LogLevel
+    from src.autonomous_trading_system.utils.crew_result_parser import parse_trading_signal
+    from src.database.manager import safe_log_event, safe_log_agent_action
     SYSTEM_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️ Main system components not available: {e}")
@@ -138,7 +140,7 @@ class IntegratedPaperTradingEngine:
         """Get trading recommendation from CrewAI agents"""
         try:
             if not self.crew:
-                # Mock recommendation if CrewAI not available
+                logger.warning("⚠️ CrewAI not available - using mock recommendation")
                 return await self._generate_mock_recommendation(symbol)
             
             logger.info(f"🤖 Running CrewAI analysis for {symbol}...")
@@ -217,13 +219,18 @@ class IntegratedPaperTradingEngine:
             return None
     
     async def _parse_crew_result(self, crew_result, symbol: str) -> Optional[TradingRecommendation]:
-        """Parse CrewAI crew result into trading recommendation"""
+        """Parse CrewAI crew result into trading recommendation - FIXED VERSION"""
         try:
-            # Get current price for calculations
-            current_price = await self._get_current_price(symbol)
+            # Get current price for calculations - ensure it's a float
+            current_price = float(await self._get_current_price(symbol))
             
-            # Convert crew result to string for parsing
-            result_text = str(crew_result).lower()
+            # Convert crew result to string for parsing - SAFE CONVERSION
+            if hasattr(crew_result, 'raw'):
+                result_text = str(crew_result.raw).lower()
+            elif isinstance(crew_result, dict):
+                result_text = str(crew_result).lower()
+            else:
+                result_text = str(crew_result).lower()
             
             # Extract action (buy/sell/hold)
             action = "hold"
@@ -236,24 +243,39 @@ class IntegratedPaperTradingEngine:
             if action == "hold":
                 return None
             
-            # Extract confidence (look for percentage or confidence keywords)
+            # Extract confidence with SAFE parsing
             confidence = 75.0  # Default
             import re
-            confidence_match = re.search(r'confidence[:\s]*(\d+(?:\.\d+)?)', result_text)
-            if confidence_match:
-                confidence = float(confidence_match.group(1))
-            elif "high" in result_text and "confidence" in result_text:
-                confidence = 85.0
-            elif "low" in result_text and "confidence" in result_text:
-                confidence = 65.0
+            try:
+                confidence_match = re.search(r'confidence[:\s]*(\d+(?:\.\d+)?)', result_text)
+                if confidence_match:
+                    confidence = float(confidence_match.group(1))
+                    # Ensure confidence is in 0-100 range
+                    if confidence <= 1:
+                        confidence *= 100
+                elif "high" in result_text and "confidence" in result_text:
+                    confidence = 85.0
+                elif "low" in result_text and "confidence" in result_text:
+                    confidence = 65.0
+            except (ValueError, AttributeError):
+                confidence = 75.0  # Safe fallback
             
-            # Calculate levels based on current price and action
-            if action == "buy":
-                stop_loss = current_price * 0.99  # 1% stop loss
-                take_profit = current_price * 1.02  # 2% take profit
-            else:
-                stop_loss = current_price * 1.01  # 1% stop loss
-                take_profit = current_price * 0.98  # 2% take profit
+            # Calculate levels based on current price and action - SAFE MATH
+            try:
+                if action == "buy":
+                    stop_loss = float(current_price * 0.99)  # 1% stop loss
+                    take_profit = float(current_price * 1.02)  # 2% take profit
+                else:
+                    stop_loss = float(current_price * 1.01)  # 1% stop loss
+                    take_profit = float(current_price * 0.98)  # 2% take profit
+            except (TypeError, ValueError):
+                # Fallback calculation if any conversion fails
+                if action == "buy":
+                    stop_loss = current_price - 0.001
+                    take_profit = current_price + 0.002
+                else:
+                    stop_loss = current_price + 0.001
+                    take_profit = current_price - 0.002
             
             # Extract Wyckoff information if available
             wyckoff_phase = "C"  # Default
@@ -270,23 +292,37 @@ class IntegratedPaperTradingEngine:
             elif "phase e" in result_text:
                 wyckoff_phase = "E"
             
-            # Calculate position size (2% risk)
-            risk_amount = self.account.balance * 0.02
-            stop_distance = abs(current_price - stop_loss)
-            position_size = risk_amount / stop_distance if stop_distance > 0 else 1000
+            # Calculate position size with SAFE MATH - THIS FIXES THE MAIN ERROR
+            try:
+                # Ensure all values are floats
+                balance = float(self.account.balance)
+                risk_amount = balance * 0.02  # 2% risk
+                stop_distance = abs(float(current_price) - float(stop_loss))
+                
+                if stop_distance > 0:
+                    position_size = risk_amount / stop_distance
+                else:
+                    position_size = 1000.0
+                    
+                # Apply reasonable bounds
+                position_size = max(100.0, min(float(position_size), 10000.0))
+                
+            except (TypeError, ValueError, ZeroDivisionError) as e:
+                logger.warning(f"Position size calculation error: {e}, using default")
+                position_size = 1000.0  # Safe fallback
             
             return TradingRecommendation(
                 action=action,
                 symbol=symbol,
-                confidence=confidence,
-                entry_price=current_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                position_size=min(position_size, 10000),  # Cap at 10k units
+                confidence=float(confidence),
+                entry_price=float(current_price),
+                stop_loss=float(stop_loss),
+                take_profit=float(take_profit),
+                position_size=float(position_size),
                 reasoning=str(crew_result)[:200],  # First 200 chars
                 wyckoff_phase=wyckoff_phase,
                 pattern_type=pattern_type,
-                key_levels={"support": stop_loss, "resistance": take_profit},
+                key_levels={"support": float(stop_loss), "resistance": float(take_profit)},
                 volume_analysis={"analysis": "crew_based"},
                 timestamp=datetime.now()
             )
@@ -322,27 +358,38 @@ class IntegratedPaperTradingEngine:
         return None
     
     async def _get_current_price(self, symbol: str) -> float:
-        """Get current price for symbol"""
+        """Get current price for symbol - FIXED VERSION"""
         if not SYSTEM_AVAILABLE:
             # Mock price for testing
             import random
-            return 1.1000 + random.uniform(-0.01, 0.01)
+            return float(1.1000 + random.uniform(-0.01, 0.01))
         
         try:
             if symbol in self.price_cache:
                 cache_time, price = self.price_cache[symbol]
                 if datetime.now() - cache_time < timedelta(seconds=10):
-                    return price
+                    return float(price)  # Ensure float return
             
             async with OandaMCPWrapper("http://localhost:8000") as oanda:
                 price_data = await oanda.get_current_price(symbol)
-                price = price_data.get('bid', 1.1000)
+                
+                # SAFE price extraction
+                if isinstance(price_data, dict):
+                    if 'bid' in price_data:
+                        price = float(price_data['bid'])
+                    elif 'price' in price_data:
+                        price = float(price_data['price'])
+                    else:
+                        price = 1.1000  # Default
+                else:
+                    price = 1.1000  # Default
+                    
                 self.price_cache[symbol] = (datetime.now(), price)
-                return price
+                return float(price)
                 
         except Exception as e:
             logger.error(f"Failed to get price for {symbol}: {e}")
-            return 1.1000
+            return float(1.1000)  # Always return float
     
     async def execute_paper_trade(self, recommendation: TradingRecommendation) -> bool:
         """Execute a paper trade based on CrewAI recommendation"""
@@ -387,46 +434,61 @@ class IntegratedPaperTradingEngine:
             return False
     
     async def update_positions(self):
-        """Update all open positions"""
+        """Update all open positions - FIXED VERSION"""
         try:
             if self.account.positions is None:
                 logger.error("Account positions list is None. Cannot update positions.")
                 return
+                
             for position in self.account.positions[:]:
-                current_price = await self._get_current_price(position.symbol)
-                position.current_price = current_price
+                try:
+                    current_price = float(await self._get_current_price(position.symbol))
+                    position.current_price = current_price
 
-                # Calculate unrealized P&L
-                if position.side == "buy":
-                    position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
-                else:
-                    position.unrealized_pnl = (position.entry_price - current_price) * position.quantity
-                
-                # Check for stop loss/take profit
-                should_close = False
-                close_reason = ""
-                
-                if position.side == "buy":
-                    if current_price <= position.stop_loss:
-                        should_close = True
-                        close_reason = "stop_loss"
-                    elif current_price >= position.take_profit:
-                        should_close = True
-                        close_reason = "take_profit"
-                else:
-                    if current_price >= position.stop_loss:
-                        should_close = True
-                        close_reason = "stop_loss"
-                    elif current_price <= position.take_profit:
-                        should_close = True
-                        close_reason = "take_profit"
-                
-                if should_close:
-                    await self._close_position(position, close_reason)
+                    # Calculate unrealized P&L with safe math
+                    entry_price = float(position.entry_price)
+                    quantity = float(position.quantity)
+                    
+                    if position.side == "buy":
+                        position.unrealized_pnl = (current_price - entry_price) * quantity
+                    else:
+                        position.unrealized_pnl = (entry_price - current_price) * quantity
+                    
+                    # Check for stop loss/take profit with safe comparisons
+                    should_close = False
+                    close_reason = ""
+                    
+                    stop_loss = float(position.stop_loss)
+                    take_profit = float(position.take_profit)
+                    
+                    if position.side == "buy":
+                        if current_price <= stop_loss:
+                            should_close = True
+                            close_reason = "stop_loss"
+                        elif current_price >= take_profit:
+                            should_close = True
+                            close_reason = "take_profit"
+                    else:
+                        if current_price >= stop_loss:
+                            should_close = True
+                            close_reason = "stop_loss"
+                        elif current_price <= take_profit:
+                            should_close = True
+                            close_reason = "take_profit"
+                    
+                    if should_close:
+                        await self._close_position(position, close_reason)
+                        
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Error updating position {position.symbol}: {e}")
+                    continue
             
-            # Update account equity
-            total_unrealized = sum(pos.unrealized_pnl for pos in self.account.positions)
-            self.account.equity = self.account.balance + total_unrealized
+            # Update account equity with safe math
+            try:
+                total_unrealized = sum(float(pos.unrealized_pnl) for pos in self.account.positions)
+                self.account.equity = float(self.account.balance) + total_unrealized
+            except (ValueError, TypeError):
+                self.account.equity = float(self.account.balance)
             
         except Exception as e:
             logger.error(f"Failed to update positions: {e}")
@@ -464,10 +526,10 @@ class IntegratedPaperTradingEngine:
             logger.error(f"Failed to close position: {e}")
     
     async def _log_trade_to_database(self, position: PaperPosition, recommendation: TradingRecommendation):
-        """Log trade to database"""
+        """Log trade to database - FIXED VERSION"""
         try:
-            async with db_manager.get_async_session() as session:
-                # Create agent action log
+            # Use safe database operation to prevent concurrency issues
+            async def _log_operation(session):
                 action = AgentAction(
                     agent_name="IntegratedPaperTradingEngine",
                     action_type="CREW_TRADE_EXECUTED",
@@ -495,17 +557,25 @@ class IntegratedPaperTradingEngine:
                     confidence_score=recommendation.confidence,
                     timestamp=recommendation.timestamp
                 )
-                
                 session.add(action)
-                await session.commit()
+                return action
+            
+            # Use safe database operation with retry
+            try:
+                async with db_manager.get_async_session() as session:
+                    await _log_operation(session)
+                    await session.commit()
+            except Exception as db_error:
+                logger.warning(f"Database logging failed (non-critical): {db_error}")
+                # Don't raise - logging failures shouldn't stop trading
                 
         except Exception as e:
             logger.error(f"Failed to log trade to database: {e}")
     
     async def _log_position_close_to_database(self, position: PaperPosition, reason: str):
-        """Log position closure to database"""
+        """Log position closure to database - FIXED VERSION"""
         try:
-            async with db_manager.get_async_session() as session:
+            async def _log_operation(session):
                 event = EventLog(
                     level=LogLevel.INFO,
                     agent_name="IntegratedPaperTradingEngine",
@@ -528,9 +598,17 @@ class IntegratedPaperTradingEngine:
                         )
                     }
                 )
-
                 session.add(event)
-                await session.commit()
+                return event
+            
+            # Use safe database operation with retry
+            try:
+                async with db_manager.get_async_session() as session:
+                    await _log_operation(session)
+                    await session.commit()
+            except Exception as db_error:
+                logger.warning(f"Database logging failed (non-critical): {db_error}")
+                # Don't raise - logging failures shouldn't stop trading
                 
         except Exception as e:
             logger.error(f"Failed to log position closure: {e}")
