@@ -1,6 +1,7 @@
 """
 Real-Time Paper Trading Dashboard
 Streamlit dashboard for monitoring live paper trading performance
+Updated to use Direct Oanda API instead of MCP wrapper
 """
 
 import sys
@@ -36,15 +37,13 @@ for root in possible_roots:
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-# Now try imports with error handling
+# UPDATED: Import Direct API instead of MCP wrapper
 try:
-    from src.mcp_servers.oanda_mcp_wrapper import OandaMCPWrapper
+    from src.mcp_servers.oanda_direct_api import OandaDirectAPI
     OANDA_AVAILABLE = True
-    print("OANDA is available")
 except ImportError as e:
-    st.error(f"⚠️ Oanda MCP wrapper not available: {e}")
+    st.error(f"⚠️ Oanda Direct API not available: {e}")
     OANDA_AVAILABLE = False
-    print("OANDA is NOT available")
 
 try:
     from src.database.manager import get_db_session, db_manager
@@ -89,665 +88,320 @@ st.markdown("""
 
 @st.cache_data(ttl=5)  # Cache for 5 seconds
 def get_live_prices() -> Dict[str, Any]:
-    """Get live prices for multiple symbols - WINDOWS COMPATIBLE"""
+    """Get live prices for multiple symbols using Direct API"""
     if not OANDA_AVAILABLE:
-        return {"error": "Oanda MCP not available"}
+        return {"error": "Oanda Direct API not available"}
     
     async def _get_prices():
         symbols = ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"]
         prices = {}
         
         try:
-            async with OandaMCPWrapper("http://localhost:8000") as oanda:
+            async with OandaDirectAPI() as oanda:
                 for symbol in symbols:
                     try:
                         price_data = await oanda.get_current_price(symbol)
-                        print("*" * 40)
-                        print(f"Price Data {price_data}")
-                        if isinstance(price_data, dict):
-                            prices[symbol] = {
-                                'bid': float(price_data.get('bid', 0)),
-                                'ask': float(price_data.get('ask', 0)),
-                                'spread': float(price_data.get('spread', 0)),
-                                'timestamp': datetime.now()
-                            }
-                        else:
-                            prices[symbol] = {
-                                'bid': 0.0,
-                                'ask': 0.0,
-                                'spread': 0.0,
-                                'error': f"Invalid price data type: {type(price_data)}",
-                                'timestamp': datetime.now()
-                            }
-                    except Exception as e:
                         prices[symbol] = {
-                            'bid': 0.0,
-                            'ask': 0.0,
-                            'spread': 0.0,
-                            'error': str(e),
-                            'timestamp': datetime.now()
+                            "bid": price_data.get("bid", 0),
+                            "ask": price_data.get("ask", 0),
+                            "spread": price_data.get("ask", 0) - price_data.get("bid", 0),
+                            "timestamp": datetime.now().isoformat()
                         }
+                    except Exception as e:
+                        prices[symbol] = {"error": str(e)}
+                        
         except Exception as e:
-            return {"error": f"Connection failed: {e}"}
+            return {"error": f"Direct API connection failed: {e}"}
         
         return prices
     
     try:
-        result = asyncio.run(_get_prices())
-        return result if isinstance(result, dict) else {"error": "Invalid response type"}
+        return asyncio.run(_get_prices())
     except Exception as e:
         return {"error": f"Failed to get live prices: {e}"}
 
-# Replace ONLY the get_historical_chart_data function in your dashboard with this enhanced debug version:
-
-@st.cache_data(ttl=10)
-def get_historical_chart_data(symbol: str, timeframe: str = "M5", count: int = 100) -> List[Any]:
-    """Get historical data for charting - WINDOWS COMPATIBLE VERSION"""
+@st.cache_data(ttl=10)  # Cache for 10 seconds
+def get_chart_data(symbol: str = "EUR_USD") -> Dict[str, Any]:
+    """Get historical data for chart using Direct API"""
     if not OANDA_AVAILABLE:
-        print("ERROR: OANDA not available")
-        return []
+        return {"error": "Oanda Direct API not available"}
     
-    async def _get_data():
+    async def _get_chart():
         try:
-            async with OandaMCPWrapper("http://localhost:8000") as oanda:
-                print(f"INFO: API Call: symbol={symbol}, timeframe={timeframe}, count={count}")
-                historical_data = await oanda.get_historical_data(symbol, timeframe, count)
-                print(f"INFO: Raw API Response Type: {type(historical_data)}")
-                
-                if isinstance(historical_data, dict):
-                    print(f"INFO: Response Keys: {list(historical_data.keys())}")
-                
-                return historical_data
+            async with OandaDirectAPI() as oanda:
+                historical = await oanda.get_historical_data(symbol, "M5", 100)
+                return historical
         except Exception as e:
-            print(f"ERROR: API Error: {e}")
             return {"error": str(e)}
     
     try:
-        print(f"\nINFO: Starting historical data request for {symbol}")
-        data = asyncio.run(_get_data())
-        print(f"SUCCESS: API call completed, processing response...")
-        
-        # Handle the EXISTING wrapper's response format
-        if isinstance(data, dict):
-            print("INFO: Response is a dictionary")
-            
-            if "error" in data:
-                error_msg = f"API Error: {data['error']}"
-                st.error(f"Failed to get historical data: {error_msg}")
-                print(f"ERROR: {error_msg}")
-                return []
-            
-            # Handle the ACTUAL format from your logs: {'success': True, 'data': {'candles': [...]}}
-            if "success" in data and data.get("success") and "data" in data:
-                nested_data = data["data"]
-                print(f"SUCCESS: Found 'success' wrapper! Nested data type: {type(nested_data)}")
-                
-                if isinstance(nested_data, dict) and "candles" in nested_data:
-                    chart_data = nested_data["candles"]
-                    print(f"SUCCESS: Found nested 'candles' key! Type: {type(chart_data)}")
-                    print(f"INFO: Candles count: {len(chart_data) if isinstance(chart_data, list) else 'Not a list'}")
-                    
-                    if isinstance(chart_data, list) and len(chart_data) > 0:
-                        print(f"INFO: Sample candle: {chart_data[0]}")
-                        print(f"SUCCESS: Returning {len(chart_data)} candles from existing wrapper")
-                        return chart_data
-                    else:
-                        print("WARNING: Candles list is empty or invalid")
-                        return []
-                else:
-                    print(f"ERROR: No 'candles' key in nested data. Available keys: {list(nested_data.keys()) if isinstance(nested_data, dict) else 'Not a dict'}")
-                    return []
-            
-            # Fallback for other possible formats
-            elif "data" in data:
-                chart_data = data.get('data', [])
-                if isinstance(chart_data, list):
-                    print(f"SUCCESS: Returning {len(chart_data)} items from 'data' key")
-                    return chart_data
-                elif isinstance(chart_data, dict) and "candles" in chart_data:
-                    candles = chart_data["candles"]
-                    print(f"SUCCESS: Found candles in data object: {len(candles) if isinstance(candles, list) else 'Not a list'}")
-                    return candles if isinstance(candles, list) else []
-                else:
-                    print(f"ERROR: 'data' key contains unexpected format: {type(chart_data)}")
-                    return []
-            
-            elif "candles" in data:
-                chart_data = data.get('candles', [])
-                print(f"SUCCESS: Found direct 'candles' key: {len(chart_data) if isinstance(chart_data, list) else 'Not a list'}")
-                return chart_data if isinstance(chart_data, list) else []
-            
-            else:
-                available_keys = list(data.keys())
-                print(f"ERROR: No expected keys found!")
-                print(f"INFO: Available keys: {available_keys}")
-                print(f"INFO: Full response (first 500 chars): {str(data)[:500]}...")
-                return []
-                
-        elif isinstance(data, list):
-            print(f"INFO: Response is already a list with {len(data)} items")
-            return data
-            
-        else:
-            error_msg = f"Unexpected data type: {type(data)}"
-            st.error(error_msg)
-            print(f"ERROR: {error_msg}")
-            return []
-            
+        return asyncio.run(_get_chart())
     except Exception as e:
-        error_msg = f"Exception in get_historical_chart_data: {e}"
-        st.error(error_msg)
-        print(f"ERROR: {error_msg}")
-        import traceback
-        traceback.print_exc()
-        return []
+        return {"error": f"Failed to get chart data: {e}"}
 
-@st.cache_data(ttl=5)
-def get_recent_agent_actions(limit: int = 10) -> List[Any]:
-    """Get recent agent actions from database - always returns a list"""
+@st.cache_data(ttl=5)  # Cache for 5 seconds
+def get_recent_agent_actions(limit: int = 10) -> List[Dict]:
+    """Get recent agent actions from database"""
     if not DATABASE_AVAILABLE:
         return []
     
     try:
         session = get_db_session()
         actions = session.query(AgentAction)\
-                         .filter(AgentAction.agent_name == "PaperTradingEngine")\
-                         .order_by(desc(AgentAction.timestamp))\
-                         .limit(limit).all()
+            .filter(AgentAction.agent_name == "PaperTradingEngine")\
+            .order_by(AgentAction.timestamp.desc())\
+            .limit(limit).all()
+        
+        result = []
+        for action in actions:
+            result.append({
+                "timestamp": action.timestamp,
+                "action_type": action.action_type,
+                "input_data": action.input_data,
+                "output_data": action.output_data
+            })
+        
         session.close()
-        return list(actions) if actions else []
-    except Exception as e:
-        st.error(f"Failed to get agent actions: {e}")
-        return []
-
-@st.cache_data(ttl=5)
-def get_recent_events(limit: int = 20) -> List[Any]:
-    """Get recent system events - always returns a list"""
-    if not DATABASE_AVAILABLE:
-        return []
-    
-    try:
-        print("*" * 50)
-        print("Getting recent events")
-        print("*" * 50)
-        session = get_db_session()
-        events = session.query(EventLog)\
-                        .filter(EventLog.agent_name == "PaperTradingEngine")\
-                        .order_by(desc(EventLog.timestamp))\
-                        .limit(limit)
-        print(f"events sql: {events}")
-        events.all()
-        session.close()
-        return list(events) if events else []
-    except Exception as e:
-        st.error(f"Failed to get events: {e}")
-        return []
-
-def create_price_chart(symbol: str, historical_data: List[Any]) -> Optional[go.Figure]:
-    """Create candlestick chart - WINDOWS COMPATIBLE VERSION"""
-    if not isinstance(historical_data, list) or not historical_data:
-        st.warning(f"No historical data available for {symbol}")
-        return None
-    
-    try:
-        processed_data = []
-        
-        print(f"INFO: Processing {len(historical_data)} candles for {symbol}")
-        print(f"INFO: Sample candle structure: {historical_data[0] if historical_data else 'No data'}")
-        
-        for i, candle in enumerate(historical_data):
-            try:
-                if isinstance(candle, dict):
-                    # Handle the ACTUAL Oanda format from your logs:
-                    # {'complete': True, 'volume': 255008, 'time': '2025-04-16T21:00:00.000000000Z', 'mid': {'o': '1.13994', 'h': '1.14094', 'l': '1.13352', 'c': '1.13646'}}
-                    
-                    if 'mid' in candle and 'time' in candle:
-                        mid_data = candle.get('mid', {})
-                        processed_data.append({
-                            'time': candle.get('time', ''),
-                            'open': float(mid_data.get('o', 0)),
-                            'high': float(mid_data.get('h', 0)),
-                            'low': float(mid_data.get('l', 0)),
-                            'close': float(mid_data.get('c', 0)),
-                            'volume': int(candle.get('volume', 0))
-                        })
-                        if i == 0:  # Debug first candle
-                            print(f"SUCCESS: First candle processed successfully: {processed_data[-1]}")
-                    
-                    # Fallback: Handle direct OHLC format
-                    elif all(key in candle for key in ['open', 'high', 'low', 'close', 'time']):
-                        processed_data.append({
-                            'time': candle.get('time', ''),
-                            'open': float(candle.get('open', 0)),
-                            'high': float(candle.get('high', 0)),
-                            'low': float(candle.get('low', 0)),
-                            'close': float(candle.get('close', 0)),
-                            'volume': int(candle.get('volume', 0))
-                        })
-                        if i == 0:
-                            print(f"SUCCESS: First candle processed (direct format): {processed_data[-1]}")
-                    
-                    # Fallback: Handle 'bid' format (if it exists)
-                    elif 'bid' in candle and 'time' in candle:
-                        bid_data = candle.get('bid', {})
-                        processed_data.append({
-                            'time': candle.get('time', ''),
-                            'open': float(bid_data.get('o', 0)),
-                            'high': float(bid_data.get('h', 0)),
-                            'low': float(bid_data.get('l', 0)),
-                            'close': float(bid_data.get('c', 0)),
-                            'volume': int(candle.get('volume', 0))
-                        })
-                        if i == 0:
-                            print(f"SUCCESS: First candle processed (bid format): {processed_data[-1]}")
-                    
-                    else:
-                        if i == 0:  # Debug first problematic candle
-                            print(f"ERROR: Unrecognized candle structure: {candle}")
-                            print(f"INFO: Available keys: {list(candle.keys())}")
-                            
-            except (KeyError, TypeError, ValueError) as e:
-                print(f"ERROR: Error processing candle {i}: {e}")
-                continue
-        
-        print(f"SUCCESS: Successfully processed {len(processed_data)} out of {len(historical_data)} candles")
-        
-        if not processed_data:
-            st.warning(f"Could not process data format for {symbol}")
-            st.write("Debug - Sample candle:", str(historical_data[0]) if historical_data else "No data")
-            return None
-        
-        # Create DataFrame from processed data
-        df = pd.DataFrame(processed_data)
-        
-        # Ensure we have required columns
-        required_cols = ['time', 'open', 'high', 'low', 'close']
-        if not all(col in df.columns for col in required_cols):
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            st.warning(f"Missing required data columns for {symbol}: {missing_cols}")
-            return None
-        
-        # Convert time to datetime and ensure numeric columns
-        df['time'] = pd.to_datetime(df['time'])
-        for col in ['open', 'high', 'low', 'close']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # Remove any rows with NaN values
-        df = df.dropna()
-        
-        if df.empty:
-            st.warning(f"No valid data points for {symbol}")
-            return None
-        
-        # Sort by time
-        df = df.sort_values('time')
-        
-        print(f"SUCCESS: Final DataFrame shape: {df.shape}")
-        print(f"INFO: Date range: {df['time'].min()} to {df['time'].max()}")
-        
-        # Create candlestick chart
-        fig = go.Figure(data=[go.Candlestick(
-            x=df['time'],
-            open=df['open'],
-            high=df['high'],
-            low=df['low'],
-            close=df['close'],
-            name=symbol
-        )])
-        
-        fig.update_layout(
-            title=f"{symbol} Live Chart ({len(df)} candles)",
-            xaxis_title="Time",
-            yaxis_title="Price",
-            height=400,
-            xaxis_rangeslider_visible=False,
-            template="plotly_dark"
-        )
-        
-        return fig
+        return result
         
     except Exception as e:
-        st.error(f"Failed to create chart for {symbol}: {e}")
-        st.write("Debug - Raw data sample:", str(historical_data[:2]) if len(historical_data) > 0 else "Empty data")
-        import traceback
-        traceback.print_exc()
-        return None
+        st.error(f"Database query failed: {e}")
+        return []
 
-# Windows-compatible debug function
-def debug_existing_wrapper():
-    """Debug function for your existing wrapper - WINDOWS COMPATIBLE"""
-    st.write("### Debug: Existing Wrapper Response")
+def main():
+    """Main dashboard function"""
     
-    if st.button("Test Existing Wrapper"):
-        with st.spinner("Testing your existing wrapper..."):
-            try:
-                async def test_wrapper():
-                    async with OandaMCPWrapper("http://localhost:8000") as oanda:
-                        # Test historical data exactly as your wrapper returns it
-                        response = await oanda.get_historical_data("EUR_USD", "M5", 10)
-                        return response
-                
-                result = asyncio.run(test_wrapper())
-                
-                st.write("**Raw Wrapper Response:**")
-                st.write(f"- Type: `{type(result)}`")
-                
-                if isinstance(result, dict):
-                    st.write(f"- Keys: `{list(result.keys())}`")
-                    
-                    # Analyze the actual structure
-                    if "success" in result and "data" in result:
-                        data_part = result["data"]
-                        st.write(f"- Data type: `{type(data_part)}`")
-                        if isinstance(data_part, dict):
-                            st.write(f"- Data keys: `{list(data_part.keys())}`")
-                            
-                            if "candles" in data_part:
-                                candles = data_part["candles"]
-                                st.write(f"- Candles count: `{len(candles) if isinstance(candles, list) else 'Not a list'}`")
-                                
-                                if isinstance(candles, list) and len(candles) > 0:
-                                    st.write("**Sample candle from your wrapper:**")
-                                    st.json(candles[0])
-                                    
-                                    # Check the actual structure we need to handle
-                                    sample_candle = candles[0]
-                                    if 'mid' in sample_candle:
-                                        st.success("Found 'mid' format - dashboard will handle this!")
-                                    elif 'bid' in sample_candle:
-                                        st.success("Found 'bid' format - dashboard will handle this!")
-                                    elif 'open' in sample_candle:
-                                        st.success("Found direct OHLC format - dashboard will handle this!")
-                                    else:
-                                        st.warning("Unknown format - may need dashboard adjustment")
-                
-                # Show structure analysis
-                with st.expander("Full Response Structure"):
-                    st.json(result)
-                    
-            except Exception as e:
-                st.error(f"Wrapper test failed: {e}")
-                st.write(f"Error type: {type(e).__name__}")
-
-def main() -> None:
+    # Header
     st.title("📈 Real-Time Paper Trading Dashboard")
-    st.markdown("---")
-    
-    # Debug section for existing wrapper
-    with st.expander("🔧 Debug Existing Wrapper"):
-        debug_existing_wrapper()
-    
-    # Show system status first
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if OANDA_AVAILABLE:
-            st.success("✅ Oanda MCP: Available")
-        else:
-            st.error("❌ Oanda MCP: Not Available")
-    
-    with col2:
-        if DATABASE_AVAILABLE:
-            st.success("✅ Database: Available")
-        else:
-            st.error("❌ Database: Not Available")
-    
-    with col3:
-        st.info(f"🕐 Current Time: {datetime.now().strftime('%H:%M:%S')}")
+    st.markdown("**Live monitoring of autonomous trading system with Direct Oanda API**")
     
     # Sidebar controls
-    st.sidebar.header("🎛️ Controls")
-    
-    # Auto-refresh toggle
-    seconds_to_refresh = 30
-    auto_refresh = st.sidebar.checkbox(f"🔄 Auto Refresh ({seconds_to_refresh}s)", value=True)
-    if auto_refresh:
-        time.sleep(seconds_to_refresh)
-        st.rerun()
+    st.sidebar.title("🎛️ Controls")
     
     # Manual refresh button
-    if st.sidebar.button("🔃 Refresh Now"):
+    if st.sidebar.button("🔄 Refresh All Data"):
         st.cache_data.clear()
         st.rerun()
     
-    # Trading symbols selection
-    st.sidebar.header("📊 Symbols")
-    symbols = st.sidebar.multiselect(
-        "Select Symbols to Monitor",
-        ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"],
-        default=["EUR_USD"]  # Start with just EUR_USD for testing
-    )
+    # Auto-refresh toggle
+    auto_refresh = st.sidebar.checkbox("🔄 Auto-refresh (5s)", value=True)
+    
+    if auto_refresh:
+        time.sleep(5)
+        st.rerun()
+    
+    # Current time
+    st.sidebar.markdown(f"**🕐 Current Time:** {datetime.now().strftime('%H:%M:%S')}")
     
     # Main dashboard content
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2 = st.columns([2, 1])
     
-    # Get live prices
-    live_prices = get_live_prices()
-    
-    # Display key metrics
     with col1:
+        st.header("📊 Live Market Data")
+        
+        # Get live prices
+        live_prices = get_live_prices()
+        
         if "error" not in live_prices:
-            active_symbols = len([s for s in symbols if s in live_prices])
-            st.metric(
-                label="📊 Active Symbols",
-                value=active_symbols,
-                delta=f"of {len(symbols)} selected"
-            )
+            # Create price table
+            price_data = []
+            for symbol, data in live_prices.items():
+                if "error" not in data:
+                    price_data.append({
+                        "Symbol": symbol,
+                        "Bid": f"{data['bid']:.5f}",
+                        "Ask": f"{data['ask']:.5f}",
+                        "Spread": f"{data['spread']:.5f}",
+                        "Time": data['timestamp'].split('T')[1][:8]
+                    })
+            
+            if price_data:
+                df_prices = pd.DataFrame(price_data)
+                st.dataframe(df_prices, use_container_width=True)
+            else:
+                st.warning("No price data available")
         else:
-            st.metric("📊 Active Symbols", "N/A", "Connection Error")
+            st.error(f"❌ {live_prices['error']}")
     
     with col2:
-        if "error" not in live_prices and live_prices:
-            avg_spread = sum(p.get('spread', 0) for p in live_prices.values()) / len(live_prices)
-            st.metric(
-                label="📈 Avg Spread",
-                value=f"{avg_spread:.5f} pips",
-                delta="Live data"
-            )
-        else:
-            st.metric("📈 Avg Spread", "N/A", "No data")
-    
-    with col3:
-        # Get recent agent actions count
-        recent_actions = get_recent_agent_actions(limit=1)
-        if recent_actions:
-            last_action_time = recent_actions[0].timestamp
-            time_diff = datetime.now() - last_action_time
-            st.metric(
-                label="🤖 Last Agent Action",
-                value=f"{time_diff.seconds}s ago",
-                delta="Active"
-            )
-        else:
-            st.metric("🤖 Last Agent Action", "N/A", "No actions")
-    
-    with col4:
-        current_time = datetime.now().strftime("%H:%M:%S")
-        st.metric(
-            label="⏰ Current Time",
-            value=current_time,
-            delta="Live"
-        )
-    
-    # Live prices table
-    st.header("💰 Live Market Prices")
-    
-    if "error" not in live_prices and live_prices:
-        price_data = []
-        for symbol, data in live_prices.items():
-            if symbol in symbols:
-                spread_pips = data.get('spread', 0)
-                price_data.append({
-                    'Symbol': symbol,
-                    'Bid': f"{data.get('bid', 0):.5f}",
-                    'Ask': f"{data.get('ask', 0):.5f}",
-                    'Spread': f"{spread_pips:.5f} pips",
-                    'Last Update': data.get('timestamp', datetime.now()).strftime("%H:%M:%S")
-                })
+        st.header("⚡ Quick Stats")
         
-        if price_data:
-            df_prices = pd.DataFrame(price_data)
-            st.dataframe(df_prices, use_container_width=True)
+        # System status metrics
+        if "error" not in live_prices:
+            st.metric("📡 Data Feed", "🟢 Connected")
+            st.metric("📊 Symbols", len(live_prices))
         else:
-            st.warning("No price data available for selected symbols")
-    else:
-        error_msg = live_prices.get("error", "Unknown error") if isinstance(live_prices, dict) else "Connection error"
-        st.error(f"❌ Unable to fetch live prices: {error_msg}")
-    
-    # Charts section
-    st.header("📊 Live Charts")
-    
-    if symbols and OANDA_AVAILABLE:
-        # Create tabs for each symbol
-        tabs = st.tabs([f"📈 {symbol}" for symbol in symbols])
+            st.metric("📡 Data Feed", "🔴 Disconnected")
+            st.metric("📊 Symbols", "0")
         
-        for i, symbol in enumerate(symbols):
-            with tabs[i]:
-                if "error" not in live_prices and symbol in live_prices and 'error' not in live_prices[symbol]:
-                    
-                    # Debug checkbox
-                    debug_mode = st.checkbox(f"🔍 Show debug info for {symbol}", key=f"debug_{symbol}")
-                    
-                    # Get historical data for chart
-                    historical_data = get_historical_chart_data(symbol, "M5", 50)
-                    
-                    if debug_mode:
-                        st.write(f"**Debug Info for {symbol}:**")
-                        st.write(f"- Data type: {type(historical_data)}")
-                        st.write(f"- Data length: {len(historical_data) if historical_data else 0}")
-                        if historical_data and len(historical_data) > 0:
-                            st.write("- Sample candle:")
-                            st.json(historical_data[0])
-                    
-                    # Ensure we have valid list data before creating chart
-                    if isinstance(historical_data, list) and len(historical_data) > 0:
-                        # Create and display chart
-                        fig = create_price_chart(symbol, historical_data)
-                        if fig:
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            # Current price info
-                            current_price = live_prices[symbol]
-                            col1, col2, col3 = st.columns(3)
-                            
-                            with col1:
-                                st.metric(
-                                    f"{symbol} Bid",
-                                    f"{current_price.get('bid', 0):.5f}",
-                                    delta=None
-                                )
-                            
-                            with col2:
-                                st.metric(
-                                    f"{symbol} Ask", 
-                                    f"{current_price.get('ask', 0):.5f}",
-                                    delta=None
-                                )
-                            
-                            with col3:
-                                st.metric(
-                                    "Spread",
-                                    f"{current_price.get('spread', 0):.5f} pips",
-                                    delta=None
-                                )
-                        else:
-                            st.error(f"Unable to create chart for {symbol}")
-                            st.info("💡 Enable debug info above to see data structure")
-                    else:
-                        st.warning(f"No historical data available for {symbol}")
-                        st.info("💡 Check your Oanda MCP connection and enable debug info")
-                else:
-                    st.error(f"❌ Price data unavailable for {symbol}")
-    else:
-        if not OANDA_AVAILABLE:
-            st.error("❌ Oanda MCP not available - cannot display charts")
-        else:
-            st.info("📊 Select symbols from the sidebar to view charts")
+        # Last update time
+        st.metric("🕐 Last Update", datetime.now().strftime("%H:%M:%S"))
     
-    # Trading activity section
-    col1, col2 = st.columns([1, 1])
+    # Live Price Chart
+    st.header("📈 Live Price Chart")
+    
+    # Symbol selector
+    chart_symbol = st.selectbox("Select Symbol", ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD"])
+    
+    # Get chart data
+    chart_data = get_chart_data(chart_symbol)
+    
+    if "error" not in chart_data and "data" in chart_data:
+        candles = chart_data["data"]
+        
+        if candles:
+            # Convert to DataFrame
+            df_chart = pd.DataFrame(candles)
+            
+            # Ensure we have the right columns
+            if all(col in df_chart.columns for col in ['timestamp', 'open', 'high', 'low', 'close']):
+                # Convert timestamp
+                df_chart['timestamp'] = pd.to_datetime(df_chart['timestamp'])
+                
+                # Create candlestick chart
+                fig = go.Figure(data=go.Candlestick(
+                    x=df_chart['timestamp'],
+                    open=df_chart['open'],
+                    high=df_chart['high'],
+                    low=df_chart['low'],
+                    close=df_chart['close'],
+                    name=chart_symbol
+                ))
+                
+                fig.update_layout(
+                    title=f"{chart_symbol} - 5 Minute Chart",
+                    xaxis_title="Time",
+                    yaxis_title="Price",
+                    height=400,
+                    xaxis_rangeslider_visible=False
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning(f"Invalid chart data format for {chart_symbol}")
+        else:
+            st.warning(f"No chart data available for {chart_symbol}")
+    else:
+        st.error(f"❌ Chart data error: {chart_data.get('error', 'Unknown error')}")
+    
+    # Trading Activity Section
+    st.header("🤖 Trading Activity")
+    
+    col1, col2 = st.columns(2)
     
     with col1:
-        st.header("🤖 Recent Agent Actions")
+        st.subheader("📋 Recent Agent Actions")
         
-        if DATABASE_AVAILABLE:
-            recent_actions = get_recent_agent_actions(10)
-            if recent_actions:
-                for action in recent_actions:
-                    with st.expander(f"🤖 {action.action_type} - {action.timestamp.strftime('%H:%M:%S')}"):
-                        st.write(f"**Agent:** {action.agent_name}")
-                        st.write(f"**Action:** {action.action_type}")
-                        if action.confidence_score is not None:
-                            st.write(f"**Confidence:** {action.confidence_score}%")
-                        
-                        if action.input_data is not None:
-                            st.write("**Input Data:**")
-                            st.json(action.input_data)
-                        
-                        if action.output_data is not None:
-                            st.write("**Output Data:**")
-                            st.json(action.output_data)
-            else:
-                st.info("No recent agent actions found")
+        recent_actions = get_recent_agent_actions(5)
+        
+        if recent_actions:
+            for action in recent_actions:
+                with st.expander(f"{action['action_type']} - {action['timestamp'].strftime('%H:%M:%S')}"):
+                    st.write(f"**Type:** {action['action_type']}")
+                    st.write(f"**Time:** {action['timestamp']}")
+                    
+                    if action['input_data']:
+                        try:
+                            input_data = json.loads(action['input_data'])
+                            st.write("**Input:**")
+                            st.json(input_data)
+                        except:
+                            st.write(f"**Input:** {action['input_data']}")
+                    
+                    if action['output_data']:
+                        try:
+                            output_data = json.loads(action['output_data'])
+                            st.write("**Output:**")
+                            st.json(output_data)
+                        except:
+                            st.write(f"**Output:** {action['output_data']}")
         else:
-            st.error("❌ Database not available - cannot show agent actions")
+            st.info("No recent trading activity")
     
     with col2:
-        st.header("📊 System Events")
+        st.subheader("📊 Performance Summary")
         
-        if DATABASE_AVAILABLE:
-            recent_events = get_recent_events(10)
-            if recent_events:
-                for event in recent_events:
-                    # Color code by level
-                    if hasattr(event.level, 'value'):
-                        level_value = event.level.value
-                    else:
-                        level_value = str(event.level)
-                    
-                    if level_value == "ERROR":
-                        st.error(f"❌ {event.message}")
-                    elif level_value == "WARNING":
-                        st.warning(f"⚠️ {event.message}")
-                    else:
-                        st.info(f"ℹ️ {event.message}")
-                    
-                    st.caption(f"{event.timestamp.strftime('%H:%M:%S')} - {event.event_type}")
+        # Get trading statistics from recent actions
+        trade_actions = [a for a in recent_actions if a['action_type'] in ['TRADE_EXECUTED', 'POSITION_CLOSED']]
+        
+        if trade_actions:
+            # Calculate basic stats
+            total_trades = len([a for a in trade_actions if a['action_type'] == 'TRADE_EXECUTED'])
+            closed_positions = len([a for a in trade_actions if a['action_type'] == 'POSITION_CLOSED'])
+            
+            st.metric("📈 Total Trades", total_trades)
+            st.metric("📊 Closed Positions", closed_positions)
+            
+            # Calculate P&L from closed positions
+            total_pnl = 0
+            winning_trades = 0
+            
+            for action in trade_actions:
+                if action['action_type'] == 'POSITION_CLOSED':
+                    try:
+                        output_data = json.loads(action['output_data'])
+                        pnl = output_data.get('realized_pnl', 0)
+                        total_pnl += pnl
+                        if pnl > 0:
+                            winning_trades += 1
+                    except:
+                        pass
+            
+            if closed_positions > 0:
+                win_rate = (winning_trades / closed_positions) * 100
             else:
-                st.info("No recent events found")
+                win_rate = 0
+            
+            st.metric("💰 Total P&L", f"${total_pnl:.2f}", delta=f"${total_pnl:.2f}")
+            st.metric("🎯 Win Rate", f"{win_rate:.1f}%")
+            
+            # P&L breakdown
+            if closed_positions > 0:
+                col_win, col_loss = st.columns(2)
+                with col_win:
+                    st.metric("✅ Winning", winning_trades)
+                with col_loss:
+                    st.metric("❌ Losing", closed_positions - winning_trades)
         else:
-            st.error("❌ Database not available - cannot show events")
+            st.info("No trading statistics available yet")
     
-    # Paper trading performance section
-    st.header("💼 Paper Trading Performance")
-    
+    # Performance Analytics
     if DATABASE_AVAILABLE:
-        # Get paper trading metrics from recent events
-        recent_events = get_recent_events(50)  # Get more events for analysis
-        trading_events = [e for e in recent_events if "position" in e.message.lower() or "trade" in e.message.lower()]
+        st.header("📊 Performance Analytics")
         
-        if trading_events:
-            # Extract P&L data from events
+        # Get extended trading history for analysis
+        extended_actions = get_recent_agent_actions(50)
+        closed_trades = [a for a in extended_actions if a['action_type'] == 'POSITION_CLOSED']
+        
+        if closed_trades:
+            # Create P&L timeline
             pnl_data = []
-            for event in trading_events:
-                if hasattr(event, 'context') and event.context is not None and 'pnl' in event.context:
+            cumulative_pnl = 0
+            
+            for action in reversed(closed_trades):  # Reverse to get chronological order
+                try:
+                    output_data = json.loads(action['output_data'])
+                    pnl = output_data.get('realized_pnl', 0)
+                    cumulative_pnl += pnl
+                    
                     pnl_data.append({
-                        'time': event.timestamp,
-                        'pnl': event.context['pnl'],
-                        'symbol': event.context.get('symbol', 'Unknown'),
-                        'action': event.context.get('side', 'Unknown')
+                        'time': action['timestamp'],
+                        'pnl': pnl,
+                        'cumulative_pnl': cumulative_pnl
                     })
+                except:
+                    pass
             
             if pnl_data:
                 df_pnl = pd.DataFrame(pnl_data)
                 
-                # Performance metrics
+                # Metrics
                 col1, col2, col3, col4 = st.columns(4)
                 
                 total_pnl = df_pnl['pnl'].sum()
-                winning_trades = len(df_pnl[df_pnl['pnl'] > 0])
                 total_trades = len(df_pnl)
-                win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+                winning_trades = len(df_pnl[df_pnl['pnl'] > 0])
+                win_rate = (winning_trades / total_trades) * 100 if total_trades > 0 else 0
                 
                 with col1:
                     st.metric(
@@ -770,16 +424,16 @@ def main() -> None:
                     fig_pnl = px.line(
                         df_pnl, 
                         x='time', 
-                        y='pnl', 
-                        title="P&L Over Time",
-                        labels={'pnl': 'P&L ($)', 'time': 'Time'}
+                        y='cumulative_pnl', 
+                        title="Cumulative P&L Over Time",
+                        labels={'cumulative_pnl': 'Cumulative P&L ($)', 'time': 'Time'}
                     )
                     fig_pnl.update_layout(height=300)
                     st.plotly_chart(fig_pnl, use_container_width=True)
             else:
                 st.info("No P&L data available yet")
         else:
-            st.info("No paper trading activity detected yet")
+            st.info("No trading performance data available yet")
     else:
         st.error("❌ Database not available - cannot show performance data")
     
@@ -789,9 +443,9 @@ def main() -> None:
     
     with col1:
         if "error" not in live_prices:
-            st.success("✅ Oanda MCP: Connected")
+            st.success("✅ Oanda Direct API: Connected")
         else:
-            st.error("❌ Oanda MCP: Disconnected")
+            st.error("❌ Oanda Direct API: Disconnected")
     
     with col2:
         if DATABASE_AVAILABLE:
@@ -814,7 +468,7 @@ def main() -> None:
     
     # Footer
     st.markdown("---")
-    st.markdown("**📈 Real-Time Paper Trading Dashboard** | Built with Streamlit, Oanda MCP, and CrewAI")
+    st.markdown("**📈 Real-Time Paper Trading Dashboard** | Built with Streamlit, Direct Oanda API, and CrewAI")
     st.markdown(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":

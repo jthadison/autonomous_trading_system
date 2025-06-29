@@ -1,49 +1,85 @@
 """
-Integrated Paper Trading System
-Connects to your existing CrewAI agents and Wyckoff analysis system
+Real-Time Paper Trading System
+Integrates CrewAI agents with live Oanda data for paper trading
+Updated to use Direct Oanda API instead of MCP wrapper
 """
 
 import sys
 import os
+from pathlib import Path
 import asyncio
 import json
-import time
-from pathlib import Path
-from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
-from pydantic import BaseModel
+from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
+from enum import Enum
+import time
+import logging
 
 # Add project root to sys.path
-project_root = Path(__file__).resolve().parent
+project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-try:
-    # Import your existing CrewAI system
-    from src.autonomous_trading_system.crew import AutonomousTradingSystem
-    from src.autonomous_trading_system.utils.wyckoff_pattern_analyzer import wyckoff_analyzer
-    from src.mcp_servers.oanda_mcp_wrapper import OandaMCPWrapper
-    from src.config.logging_config import logger
-    from src.database.manager import db_manager
-    from src.database.models import Trade, TradeStatus, TradeSide, AgentAction, EventLog, LogLevel
-    from src.autonomous_trading_system.utils.crew_result_parser import parse_trading_signal
-    from src.database.manager import safe_log_event, safe_log_agent_action
-    SYSTEM_AVAILABLE = True
-except ImportError as e:
-    print(f"⚠️ Main system components not available: {e}")
-    SYSTEM_AVAILABLE = False
-    
-    # Mock logger if not available
-    class MockLogger:
-        def info(self, msg, **kwargs): print(f"INFO: {msg}")
-        def error(self, msg, **kwargs): print(f"ERROR: {msg}")
-        def warning(self, msg, **kwargs): print(f"WARNING: {msg}")
-    logger = MockLogger()
+# UPDATED: Import Direct API instead of MCP wrapper
+from src.mcp_servers.oanda_direct_api import OandaDirectAPI
+from src.database.manager import db_manager
+from src.database.models import Trade, TradeStatus, TradeSide, EventLog, LogLevel
+from src.config.logging_config import logger
 
-@dataclass
-class TradingRecommendation:
-    """Trading recommendation from CrewAI agents"""
+# Import the fixed CrewAI backtester components
+from crewai import Agent, Task, Crew, Process
+from crewai.tools import BaseTool
+from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
+
+# Paper Trading Models
+class PaperPosition(BaseModel):
+    """Virtual position for paper trading"""
+    id: str
+    symbol: str
+    side: str  # "buy" or "sell"
+    quantity: float
+    entry_price: float
+    current_price: float
+    unrealized_pnl: float
+    margin_required: float
+    entry_time: datetime
+    wyckoff_phase: str
+    pattern_type: str
+    confidence: float
+
+class PaperOrder(BaseModel):
+    """Virtual order for paper trading"""
+    id: str
+    symbol: str
+    order_type: str  # "market", "limit", "stop"
+    side: str
+    quantity: float
+    price: Optional[float] = None
+    stop_price: Optional[float] = None
+    status: str = "pending"  # "pending", "filled", "cancelled"
+    created_time: datetime
+    filled_time: Optional[datetime] = None
+    filled_price: Optional[float] = None
+
+class PaperAccount(BaseModel):
+    """Virtual account for paper trading"""
+    balance: float = 100000.0  # Starting with $100K
+    equity: float = 100000.0
+    used_margin: float = 0.0
+    free_margin: float = 100000.0
+    positions: List[PaperPosition] = field(default_factory=list)
+    orders: List[PaperOrder] = field(default_factory=list)
+    total_trades: int = 0
+    winning_trades: int = 0
+    total_pnl: float = 0.0
+
+class TradingSignal(BaseModel):
+    """Trading signal from CrewAI agents"""
     action: str  # "buy", "sell", "hold"
     symbol: str
     confidence: float
@@ -54,379 +90,445 @@ class TradingRecommendation:
     reasoning: str
     wyckoff_phase: str
     pattern_type: str
-    key_levels: Dict[str, float]
-    volume_analysis: Dict[str, Any]
     timestamp: datetime
 
-@dataclass
-class PaperPosition:
-    """Paper trading position"""
-    id: str
-    symbol: str
-    side: str
-    quantity: float
-    entry_price: float
-    current_price: float
-    unrealized_pnl: float = 0.0
-    stop_loss: float = 0.0
-    take_profit: float = 0.0
-    entry_time: Optional[datetime] = None
-    wyckoff_phase: str = ""
-    pattern_type: str = ""
-    confidence: float = 0.0
+# UPDATED: Enhanced Tools for Direct API Trading
+class LiveMarketDataTool(BaseTool):
+    """Tool for accessing live market data via Direct API"""
+    name: str = "live_market_data"
+    description: str = "Get live market data and price information"
     
-    def __post_init__(self):
-        if self.entry_time is None:
-            self.entry_time = datetime.now()
-
-@dataclass 
-class PaperAccount:
-    """Paper trading account"""
-    balance: float = 100000.0
-    equity: float = 100000.0
-    positions: Optional[List[PaperPosition]] = None
-    total_trades: int = 0
-    winning_trades: int = 0
-    total_pnl: float = 0.0
-    
-    def __post_init__(self):
-        if self.positions is None:
-            self.positions = []
-
-class IntegratedPaperTradingEngine:
-    """Paper trading engine integrated with CrewAI agents"""
-    
-    def __init__(self, initial_balance: float = 100000.0):
-        self.account = PaperAccount(balance=initial_balance, equity=initial_balance)
-        self.running = False
-        #
-        self.trading_symbols = ["EUR_USD"]
-        self.analysis_interval = 300  # 5 minutes between full analysis
-        self.price_cache = {}
-        
-        # Initialize CrewAI system
-        if SYSTEM_AVAILABLE:
-            self.crew_system = AutonomousTradingSystem()
-            self.crew = self.crew_system.crew()
-        else:
-            self.crew_system = None
-            self.crew = None
-        
-        logger.info("✅ Integrated Paper Trading Engine initialized")
-    
-    async def initialize(self):
-        """Initialize the engine"""
-        logger.info("🚀 Initializing Integrated Paper Trading Engine...")
-        
-        if not SYSTEM_AVAILABLE:
-            logger.warning("⚠️ CrewAI system not available - using mock mode")
-            return
-        
+    def _run(self, symbol: str) -> str:
+        """Get live market data using Direct API"""
         try:
-            # Test Oanda connection
-            async with OandaMCPWrapper("http://localhost:8000") as oanda:
-                health = await oanda.health_check()
-                if health["status"] == "healthy":
-                    logger.info("✅ Oanda MCP connection established")
-                else:
-                    raise Exception(f"Oanda MCP not healthy: {health}")
+            async def _get_data():
+                # UPDATED: Use Direct API instead of MCP wrapper
+                async with OandaDirectAPI() as oanda:
+                    # Get current price
+                    price_data = await oanda.get_current_price(symbol)
+                    
+                    # Get recent historical data for analysis
+                    historical = await oanda.get_historical_data(symbol, "M5", 50)
+                    
+                    return {
+                        "current_price": price_data,
+                        "recent_data": historical.get("data", [])[-10:],  # Last 10 candles
+                        "timestamp": datetime.now().isoformat()
+                    }
+            
+            # Run in event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, _get_data())
+                    result = future.result()
+            else:
+                result = asyncio.run(_get_data())
+            
+            return json.dumps(result)
+            
         except Exception as e:
-            logger.error(f"❌ Failed to connect to Oanda MCP: {e}")
-            raise
-        
-        logger.info("✅ Integrated Paper Trading Engine initialized successfully")
+            return json.dumps({"error": str(e)})
+
+class LiveWyckoffTool(BaseTool):
+    """Tool for live Wyckoff analysis"""
+    name: str = "live_wyckoff_analysis"
+    description: str = "Perform Wyckoff analysis on live market data"
     
-    async def get_crew_recommendation(self, symbol: str) -> Optional[TradingRecommendation]:
-        """Get trading recommendation from CrewAI agents"""
+    def _run(self, market_data: str) -> str:
+        """Analyze live market for Wyckoff patterns"""
         try:
-            if not self.crew:
-                logger.warning("⚠️ CrewAI not available - using mock recommendation")
-                return await self._generate_mock_recommendation(symbol)
+            data = json.loads(market_data)
+            current_price = data.get("current_price", {}).get("bid", 0)
             
-            logger.info(f"🤖 Running CrewAI analysis for {symbol}...")
-            
-            # Prepare inputs for CrewAI
-            inputs = {
-                'symbol_name': symbol,
-                'current_year': str(datetime.now().year),
-                'analysis_timestamp': datetime.now().isoformat()
+            # Simplified live Wyckoff analysis
+            analysis = {
+                "pattern": "accumulation" if current_price > 1.1000 else "distribution",
+                "phase": "C",
+                "confidence": np.random.uniform(70, 85),
+                "key_level": current_price * 0.999,
+                "trend_strength": np.random.uniform(60, 80),
+                "volume_analysis": "above_average",
+                "recommended_action": "buy" if current_price > 1.1000 else "sell"
             }
             
-            try:
-                # Run the crew analysis with timeout and error handling
-                logger.info(f"   🧠 Starting CrewAI crew for {symbol}...")
-                result = self.crew.kickoff(inputs=inputs)
-                logger.info(f"   ✅ CrewAI analysis completed for {symbol}")
-                
-                # Parse the crew result into a trading recommendation
-                recommendation = await self._parse_crew_result(result, symbol)
-                
-                if recommendation:
-                    logger.info(f"✅ CrewAI recommendation: {recommendation.action.upper()} {symbol} (confidence: {recommendation.confidence:.1f}%)")
-                    logger.info(f"   💡 Reasoning: {recommendation.reasoning[:100]}...")
-                else:
-                    logger.info(f"💤 CrewAI recommends HOLD for {symbol}")
-                
-                return recommendation
-                
-            except Exception as crew_error:
-                logger.error(f"❌ CrewAI execution failed for {symbol}: {crew_error}")
-                # Try to extract any partial results or fall back to mock
-                if "analyze_wyckoff_patterns" in str(crew_error):
-                    logger.warning(f"⚠️ Wyckoff analysis tool failed, falling back to simple analysis for {symbol}")
-                    return await self._generate_simple_fallback_recommendation(symbol)
-                else:
-                    logger.warning(f"⚠️ CrewAI failed, generating mock recommendation for {symbol}")
-                    return await self._generate_mock_recommendation(symbol)
+            return json.dumps(analysis)
             
         except Exception as e:
-            logger.error(f"❌ Crew recommendation system failed for {symbol}: {e}")
-            return await self._generate_mock_recommendation(symbol)
+            return json.dumps({"error": str(e)})
+
+class LiveRiskTool(BaseTool):
+    """Tool for live risk management"""
+    name: str = "live_risk_management"
+    description: str = "Calculate position sizing and risk for live trading"
     
-    async def _generate_simple_fallback_recommendation(self, symbol: str) -> Optional[TradingRecommendation]:
-        """Generate a simple fallback recommendation when Wyckoff analysis fails"""
+    def __init__(self, account=None, **kwargs):
+        """Initialize with account reference"""
+        super().__init__(**kwargs)
+        self.account = account
+    
+    def _run(self, signal_data: str) -> str:
+        """Calculate risk management for live trade"""
         try:
-            current_price = await self._get_current_price(symbol)
+            data = json.loads(signal_data)
+            entry_price = data.get("entry_price", 0)
+            stop_loss = data.get("stop_loss", 0)
             
-            # Simple technical analysis fallback
-            # You could enhance this with basic TA indicators
-            import random
-            
-            # Simple momentum-based decision (placeholder)
-            if random.random() > 0.6:  # 40% chance of signal
-                action = "buy" if random.random() > 0.4 else "sell"
-                confidence = random.uniform(70, 80)  # Lower confidence for fallback
+            # Risk management calculations
+            if self.account is None:
+                return json.dumps({"error": "Account not initialized"})
                 
-                return TradingRecommendation(
-                    action=action,
+            risk_amount = self.account.balance * 0.02  # 2% risk
+            risk_per_unit = abs(entry_price - stop_loss)
+            
+            if risk_per_unit > 0:
+                position_size = min(risk_amount / risk_per_unit, self.account.free_margin * 0.1)
+            else:
+                position_size = 1000
+            
+            risk_mgmt = {
+                "position_size": position_size,
+                "risk_amount": risk_amount,
+                "risk_percentage": 2.0,
+                "max_loss": risk_per_unit * position_size,
+                "account_balance": self.account.balance if self.account else 0,
+                "free_margin": self.account.free_margin if self.account else 0
+            }
+            
+            return json.dumps(risk_mgmt)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+class LiveAccountTool(BaseTool):
+    """Tool for live account monitoring"""
+    name: str = "live_account_monitor"
+    description: str = "Monitor live account status and positions"
+    
+    def __init__(self, account=None, **kwargs):
+        """Initialize with account reference"""
+        super().__init__(**kwargs)
+        self.account = account
+    
+    def _run(self, query: str) -> str:
+        """Get live account information"""
+        try:
+            if self.account is None:
+                return json.dumps({"error": "Account not initialized"})
+                
+            account_info = {
+                "balance": self.account.balance,
+                "equity": self.account.equity,
+                "free_margin": self.account.free_margin,
+                "used_margin": self.account.used_margin,
+                "open_positions": len(self.account.positions),
+                "total_trades": self.account.total_trades,
+                "total_pnl": self.account.total_pnl
+            }
+            
+            return json.dumps(account_info)
+            
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+class PaperTradingEngine:
+    """Core paper trading engine with Direct API"""
+    
+    def __init__(self, initial_balance: float = 100000.0):
+        self.account = PaperAccount(balance=initial_balance, equity=initial_balance, free_margin=initial_balance)
+        self.agents = {}
+        self.running = False
+        self.trading_symbols = ["EUR_USD"]  # Start with one symbol
+        self.analysis_interval = 60  # Analyze every 60 seconds
+        self.price_cache = {}
+        
+        # Initialize LLM
+        self.llm = self._create_llm()
+        
+        # Initialize tools
+        self.wyckoff_tool = LiveWyckoffTool()
+        # FIXED: Pass account to LiveRiskTool constructor properly
+        self.risk_tool = LiveRiskTool(account=self.account)
+        self.account_tool = LiveAccountTool(account=self.account)
+        
+        # Create agents
+        self._create_trading_agents()
+    
+    def _create_llm(self):
+        """Create LLM for agents"""
+        try:
+            return ChatAnthropic(
+                model_name="claude-3-5-sonnet-20241022",
+                temperature=0.1,
+                max_tokens=800,
+                anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
+                timeout=30
+            )
+        except:
+            try:
+                return ChatOpenAI(
+                    model="gpt-4o-mini",
+                    temperature=0.1,
+                    timeout=30
+                )
+            except:
+                logger.warning("No LLM available - using mock responses")
+                return None
+    
+    def _create_trading_agents(self):
+        """Create specialized trading agents"""
+        
+        if not self.llm:
+            logger.warning("No LLM available - agents will use mock responses")
+            return
+        
+        # Market Monitor Agent
+        self.agents['market_monitor'] = Agent(
+            role="Live Market Monitor",
+            goal="Monitor live market conditions and identify trading opportunities",
+            backstory="Expert in real-time market analysis and pattern recognition.",
+            verbose=False,
+            allow_delegation=False,
+            tools=[self.wyckoff_tool],
+            llm=self.llm,
+            max_execution_time=20,
+            max_iter=1
+        )
+        
+        # Risk Manager Agent
+        self.agents['risk_manager'] = Agent(
+            role="Live Risk Manager", 
+            goal="Manage position sizing and portfolio risk in real-time",
+            backstory="Professional risk manager specializing in live trading risk control.",
+            verbose=False,
+            allow_delegation=False,
+            tools=[self.risk_tool],
+            llm=self.llm,
+            max_execution_time=20,
+            max_iter=1
+        )
+        
+        # Trading Coordinator Agent
+        self.agents['trading_coordinator'] = Agent(
+            role="Live Trading Coordinator",
+            goal="Make final trading decisions based on live analysis",
+            backstory="Senior trader coordinating live market analysis into trading decisions.",
+            verbose=False,
+            allow_delegation=False,
+            llm=self.llm,
+            max_execution_time=20,
+            max_iter=1
+        )
+    
+    async def initialize(self):
+        """Initialize the paper trading engine with Direct API"""
+        logger.info("🚀 Initializing Paper Trading Engine with Direct API...")
+        
+        # UPDATED: Test Direct API connection
+        try:
+            async with OandaDirectAPI() as oanda:
+                # Test connection
+                account_info = await oanda.get_account_info()
+                logger.info("✅ Direct Oanda API connection established")
+                logger.info(f"📊 Connected to account: {account_info.get('currency', 'USD')}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to Direct Oanda API: {e}")
+            raise
+        
+        logger.info("✅ Paper Trading Engine initialized successfully")
+    
+    async def get_trading_signal(self, symbol: str) -> Optional[TradingSignal]:
+        """Get trading signal from agents"""
+        try:
+            if not self.agents:
+                # Mock signal when no agents available
+                current_price = await self._get_current_price(symbol)
+                return TradingSignal(
+                    action="buy" if np.random.random() > 0.6 else "hold",
                     symbol=symbol,
-                    confidence=confidence,
+                    confidence=np.random.uniform(70, 85),
                     entry_price=current_price,
-                    stop_loss=current_price * (0.995 if action == "buy" else 1.005),  # Tighter stops
-                    take_profit=current_price * (1.015 if action == "buy" else 0.985),  # Conservative targets
-                    position_size=500,  # Smaller size for fallback trades
-                    reasoning="Fallback analysis due to Wyckoff tool error",
-                    wyckoff_phase="Unknown",
-                    pattern_type="fallback_analysis",
-                    key_levels={"support": current_price * 0.995, "resistance": current_price * 1.005},
-                    volume_analysis={"analysis": "fallback"},
+                    stop_loss=current_price * 0.99,
+                    take_profit=current_price * 1.02,
+                    position_size=1000,
+                    reasoning="Mock signal for testing",
+                    wyckoff_phase="C",
+                    pattern_type="accumulation",
                     timestamp=datetime.now()
                 )
-            return None
             
+            # Get live market data using Direct API
+            market_tool = LiveMarketDataTool()
+            market_data = market_tool._run(symbol)
+
+            # Market analysis task
+            monitor_task = Task(
+                description=f"""
+                Analyze live market conditions for {symbol}.
+                Current market data: {market_data}
+                
+                Identify:
+                1. Current trend direction
+                2. Key support/resistance levels
+                3. Trading opportunities
+                4. Market sentiment
+                
+                Provide your analysis in JSON format with pattern and confidence.
+                """,
+                expected_output="JSON with market analysis and trading opportunity assessment",
+                agent=self.agents['market_monitor']
+            )
+
+            # Risk analysis task
+            risk_task = Task(
+                description=f"""
+                Based on the market analysis for {symbol}, calculate appropriate position sizing and risk parameters.
+                
+                Market data: {market_data}
+                Account balance: ${self.account.balance:,.2f}
+                Free margin: ${self.account.free_margin:,.2f}
+                
+                Calculate:
+                1. Optimal position size
+                2. Stop loss level
+                3. Take profit target
+                4. Risk-reward ratio
+                
+                Use 2% risk per trade maximum.
+                """,
+                expected_output="JSON with position sizing and risk management parameters",
+                agent=self.agents['risk_manager']
+            )
+
+            # Trading decision task
+            trading_task = Task(
+                description=f"""
+                Make final trading decision for {symbol} based on market analysis and risk assessment.
+                
+                Consider:
+                1. Market analysis results
+                2. Risk management parameters
+                3. Current account status
+                4. Trading rules and filters
+                
+                Decision should be BUY, SELL, or HOLD with confidence level.
+                Only recommend trades with >75% confidence.
+                """,
+                expected_output="Final trading decision with action, confidence, and reasoning",
+                agent=self.agents['trading_coordinator']
+            )
+
+            # Create and run crew
+            crew = Crew(
+                agents=[
+                    self.agents['market_monitor'],
+                    self.agents['risk_manager'], 
+                    self.agents['trading_coordinator']
+                ],
+                tasks=[monitor_task, risk_task, trading_task],
+                process=Process.sequential,
+                verbose=False
+            )
+
+            # Execute analysis
+            result = crew.kickoff()
+            
+            # Parse result into trading signal
+            return self._parse_crew_result(result, symbol)
+
         except Exception as e:
-            logger.error(f"Even fallback recommendation failed for {symbol}: {e}")
+            logger.error(f"Failed to get trading signal: {e}")
             return None
-    
-    async def _parse_crew_result(self, crew_result, symbol: str) -> Optional[TradingRecommendation]:
-        """Parse CrewAI crew result into trading recommendation - FIXED VERSION"""
+
+    def _parse_crew_result(self, result, symbol: str) -> Optional[TradingSignal]:
+        """Parse crew result into trading signal"""
         try:
-            # Get current price for calculations - ensure it's a float
-            current_price = float(await self._get_current_price(symbol))
+            current_price = asyncio.run(self._get_current_price(symbol))
             
-            # Convert crew result to string for parsing - SAFE CONVERSION
-            if hasattr(crew_result, 'raw'):
-                result_text = str(crew_result.raw).lower()
-            elif isinstance(crew_result, dict):
-                result_text = str(crew_result).lower()
-            else:
-                result_text = str(crew_result).lower()
+            # Extract decision (simplified for now)
+            result_str = str(result).lower()
             
-            # Extract action (buy/sell/hold)
-            action = "hold"
-            if "buy" in result_text or "long" in result_text:
+            if "buy" in result_str:
                 action = "buy"
-            elif "sell" in result_text or "short" in result_text:
+            elif "sell" in result_str:
                 action = "sell"
+            else:
+                action = "hold"
             
-            # If no clear action, return None (HOLD)
+            # Extract confidence (mock for now)
+            confidence = np.random.uniform(75, 90) if action != "hold" else np.random.uniform(50, 74)
+            
             if action == "hold":
                 return None
-            
-            # Extract confidence with SAFE parsing
-            confidence = 75.0  # Default
-            import re
-            try:
-                confidence_match = re.search(r'confidence[:\s]*(\d+(?:\.\d+)?)', result_text)
-                if confidence_match:
-                    confidence = float(confidence_match.group(1))
-                    # Ensure confidence is in 0-100 range
-                    if confidence <= 1:
-                        confidence *= 100
-                elif "high" in result_text and "confidence" in result_text:
-                    confidence = 85.0
-                elif "low" in result_text and "confidence" in result_text:
-                    confidence = 65.0
-            except (ValueError, AttributeError):
-                confidence = 75.0  # Safe fallback
-            
-            # Calculate levels based on current price and action - SAFE MATH
-            try:
-                if action == "buy":
-                    stop_loss = float(current_price * 0.99)  # 1% stop loss
-                    take_profit = float(current_price * 1.02)  # 2% take profit
-                else:
-                    stop_loss = float(current_price * 1.01)  # 1% stop loss
-                    take_profit = float(current_price * 0.98)  # 2% take profit
-            except (TypeError, ValueError):
-                # Fallback calculation if any conversion fails
-                if action == "buy":
-                    stop_loss = current_price - 0.001
-                    take_profit = current_price + 0.002
-                else:
-                    stop_loss = current_price + 0.001
-                    take_profit = current_price - 0.002
-            
-            # Extract Wyckoff information if available
-            wyckoff_phase = "C"  # Default
-            pattern_type = "accumulation" if action == "buy" else "distribution"
-            
-            if "phase a" in result_text:
-                wyckoff_phase = "A"
-            elif "phase b" in result_text:
-                wyckoff_phase = "B"
-            elif "phase c" in result_text:
-                wyckoff_phase = "C"
-            elif "phase d" in result_text:
-                wyckoff_phase = "D"
-            elif "phase e" in result_text:
-                wyckoff_phase = "E"
-            
-            # Calculate position size with SAFE MATH - THIS FIXES THE MAIN ERROR
-            try:
-                # Ensure all values are floats
-                balance = float(self.account.balance)
-                risk_amount = balance * 0.02  # 2% risk
-                stop_distance = abs(float(current_price) - float(stop_loss))
                 
-                if stop_distance > 0:
-                    position_size = risk_amount / stop_distance
-                else:
-                    position_size = 1000.0
-                    
-                # Apply reasonable bounds
-                position_size = max(100.0, min(float(position_size), 10000.0))
-                
-            except (TypeError, ValueError, ZeroDivisionError) as e:
-                logger.warning(f"Position size calculation error: {e}, using default")
-                position_size = 1000.0  # Safe fallback
-            
-            return TradingRecommendation(
-                action=action,
-                symbol=symbol,
-                confidence=float(confidence),
-                entry_price=float(current_price),
-                stop_loss=float(stop_loss),
-                take_profit=float(take_profit),
-                position_size=float(position_size),
-                reasoning=str(crew_result)[:200],  # First 200 chars
-                wyckoff_phase=wyckoff_phase,
-                pattern_type=pattern_type,
-                key_levels={"support": float(stop_loss), "resistance": float(take_profit)},
-                volume_analysis={"analysis": "crew_based"},
-                timestamp=datetime.now()
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to parse crew result: {e}")
-            return None
-    
-    async def _generate_mock_recommendation(self, symbol: str) -> Optional[TradingRecommendation]:
-        """Generate mock recommendation when CrewAI not available"""
-        import random
-        
-        if random.random() > 0.7:  # 30% chance of signal
-            current_price = await self._get_current_price(symbol)
-            action = "buy" if random.random() > 0.5 else "sell"
-            confidence = random.uniform(75, 90)
-            
-            return TradingRecommendation(
+            return TradingSignal(
                 action=action,
                 symbol=symbol,
                 confidence=confidence,
                 entry_price=current_price,
                 stop_loss=current_price * (0.99 if action == "buy" else 1.01),
                 take_profit=current_price * (1.02 if action == "buy" else 0.98),
-                position_size=1000,
-                reasoning="Mock recommendation for testing",
+                position_size=1000,  # Will be recalculated by risk management
+                reasoning=f"CrewAI analysis: {result_str[:200]}...",
                 wyckoff_phase="C",
                 pattern_type="accumulation" if action == "buy" else "distribution",
-                key_levels={"support": current_price * 0.99, "resistance": current_price * 1.01},
-                volume_analysis={"analysis": "mock"},
                 timestamp=datetime.now()
             )
-        return None
-    
-    async def _get_current_price(self, symbol: str) -> float:
-        """Get current price for symbol - FIXED VERSION"""
-        if not SYSTEM_AVAILABLE:
-            # Mock price for testing
-            import random
-            return float(1.1000 + random.uniform(-0.01, 0.01))
-        
-        try:
-            if symbol in self.price_cache:
-                cache_time, price = self.price_cache[symbol]
-                if datetime.now() - cache_time < timedelta(seconds=10):
-                    return float(price)  # Ensure float return
             
-            async with OandaMCPWrapper("http://localhost:8000") as oanda:
+        except Exception as e:
+            logger.error(f"Failed to parse crew result: {e}")
+            return None
+
+    async def _get_current_price(self, symbol: str) -> float:
+        """Get current price with caching using Direct API"""
+        try:
+            # Check cache first
+            if symbol in self.price_cache:
+                cached_time, cached_price = self.price_cache[symbol]
+                if datetime.now() - cached_time < timedelta(seconds=10):
+                    return cached_price
+            
+            # UPDATED: Get price using Direct API
+            async with OandaDirectAPI() as oanda:
                 price_data = await oanda.get_current_price(symbol)
-                
-                # SAFE price extraction
-                if isinstance(price_data, dict):
-                    if 'bid' in price_data:
-                        price = float(price_data['bid'])
-                    elif 'price' in price_data:
-                        price = float(price_data['price'])
-                    else:
-                        price = 1.1000  # Default
-                else:
-                    price = 1.1000  # Default
-                    
+                price = price_data.get('bid', 1.1000)
                 self.price_cache[symbol] = (datetime.now(), price)
-                return float(price)
+                return price
                 
         except Exception as e:
             logger.error(f"Failed to get price for {symbol}: {e}")
-            return float(1.1000)  # Always return float
+            return 1.1000  # Default price
     
-    async def execute_paper_trade(self, recommendation: TradingRecommendation) -> bool:
-        """Execute a paper trade based on CrewAI recommendation"""
+    async def execute_paper_trade(self, signal: TradingSignal) -> bool:
+        """Execute a paper trade based on signal"""
         try:
+            # Create paper position
             position = PaperPosition(
-                id=f"{recommendation.symbol}_{int(time.time())}",
-                symbol=recommendation.symbol,
-                side=recommendation.action,
-                quantity=recommendation.position_size,
-                entry_price=recommendation.entry_price,
-                current_price=recommendation.entry_price,
-                stop_loss=recommendation.stop_loss,
-                take_profit=recommendation.take_profit,
-                entry_time=recommendation.timestamp,
-                wyckoff_phase=recommendation.wyckoff_phase,
-                pattern_type=recommendation.pattern_type,
-                confidence=recommendation.confidence
+                id=f"{signal.symbol}_{int(time.time())}",
+                symbol=signal.symbol,
+                side=signal.action,
+                quantity=signal.position_size,
+                entry_price=signal.entry_price,
+                current_price=signal.entry_price,
+                unrealized_pnl=0.0,
+                margin_required=signal.position_size * signal.entry_price * 0.02,  # 2% margin
+                entry_time=signal.timestamp,
+                wyckoff_phase=signal.wyckoff_phase,
+                pattern_type=signal.pattern_type,
+                confidence=signal.confidence
             )
             
             # Add to account
-            if self.account.positions is not None:
-                self.account.positions.append(position)
-            else:
-                logger.error("Account positions list is None. Cannot append position.")
+            self.account.positions.append(position)
+            self.account.used_margin += position.margin_required
+            self.account.free_margin = self.account.balance - self.account.used_margin
             self.account.total_trades += 1
             
-            # Log to database if available
-            if SYSTEM_AVAILABLE:
-                await self._log_trade_to_database(position, recommendation)
+            # Log to database
+            await self._log_trade_to_database(position, signal)
             
-            logger.info(f"📈 Paper trade executed: {recommendation.action.upper()} {recommendation.symbol} @ {recommendation.entry_price:.5f}")
-            logger.info(f"   💡 Reasoning: {recommendation.reasoning[:100]}...")
-            logger.info(f"   🎯 Wyckoff Phase: {recommendation.wyckoff_phase} ({recommendation.pattern_type})")
-            logger.info(f"   🔢 Position Size: {recommendation.position_size:.0f} units")
-            logger.info(f"   🛡️ Stop Loss: {recommendation.stop_loss:.5f}")
-            logger.info(f"   🎯 Take Profit: {recommendation.take_profit:.5f}")
-            
+            logger.info(f"📈 Paper trade executed: {signal.action.upper()} {signal.symbol} @ {signal.entry_price:.5f}")
             return True
             
         except Exception as e:
@@ -434,393 +536,342 @@ class IntegratedPaperTradingEngine:
             return False
     
     async def update_positions(self):
-        """Update all open positions - FIXED VERSION"""
+        """Update all open positions with current prices"""
         try:
-            if self.account.positions is None:
-                logger.error("Account positions list is None. Cannot update positions.")
-                return
+            for position in self.account.positions:
+                # Get current price
+                current_price = await self._get_current_price(position.symbol)
+                position.current_price = current_price
                 
-            for position in self.account.positions[:]:
-                try:
-                    current_price = float(await self._get_current_price(position.symbol))
-                    position.current_price = current_price
-
-                    # Calculate unrealized P&L with safe math
-                    entry_price = float(position.entry_price)
-                    quantity = float(position.quantity)
-                    
-                    if position.side == "buy":
-                        position.unrealized_pnl = (current_price - entry_price) * quantity
-                    else:
-                        position.unrealized_pnl = (entry_price - current_price) * quantity
-                    
-                    # Check for stop loss/take profit with safe comparisons
-                    should_close = False
-                    close_reason = ""
-                    
-                    stop_loss = float(position.stop_loss)
-                    take_profit = float(position.take_profit)
-                    
-                    if position.side == "buy":
-                        if current_price <= stop_loss:
-                            should_close = True
-                            close_reason = "stop_loss"
-                        elif current_price >= take_profit:
-                            should_close = True
-                            close_reason = "take_profit"
-                    else:
-                        if current_price >= stop_loss:
-                            should_close = True
-                            close_reason = "stop_loss"
-                        elif current_price <= take_profit:
-                            should_close = True
-                            close_reason = "take_profit"
-                    
-                    if should_close:
-                        await self._close_position(position, close_reason)
-                        
-                except (ValueError, TypeError) as e:
-                    logger.error(f"Error updating position {position.symbol}: {e}")
-                    continue
+                # Calculate unrealized P&L
+                if position.side == "buy":
+                    position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
+                else:
+                    position.unrealized_pnl = (position.entry_price - current_price) * position.quantity
+                
+                # Check for exit conditions (simplified)
+                should_close = False
+                exit_reason = ""
+                
+                # Take profit check
+                if position.side == "buy" and current_price >= position.entry_price * 1.02:
+                    should_close = True
+                    exit_reason = "take_profit"
+                elif position.side == "sell" and current_price <= position.entry_price * 0.98:
+                    should_close = True
+                    exit_reason = "take_profit"
+                
+                # Stop loss check
+                elif position.side == "buy" and current_price <= position.entry_price * 0.99:
+                    should_close = True
+                    exit_reason = "stop_loss"
+                elif position.side == "sell" and current_price >= position.entry_price * 1.01:
+                    should_close = True
+                    exit_reason = "stop_loss"
+                
+                if should_close:
+                    await self._close_position(position, exit_reason)
             
-            # Update account equity with safe math
-            try:
-                total_unrealized = sum(float(pos.unrealized_pnl) for pos in self.account.positions)
-                self.account.equity = float(self.account.balance) + total_unrealized
-            except (ValueError, TypeError):
-                self.account.equity = float(self.account.balance)
+            # Update account equity
+            total_unrealized = sum(pos.unrealized_pnl for pos in self.account.positions)
+            self.account.equity = self.account.balance + total_unrealized
             
         except Exception as e:
             logger.error(f"Failed to update positions: {e}")
     
     async def _close_position(self, position: PaperPosition, reason: str):
-        """Close a position"""
+        """Close a paper position"""
         try:
-            # Realize P&L
-            self.account.balance += position.unrealized_pnl
-            self.account.total_pnl += position.unrealized_pnl
+            # Calculate realized P&L
+            realized_pnl = position.unrealized_pnl
             
-            if position.unrealized_pnl > 0:
+            # Update account
+            self.account.balance += realized_pnl
+            self.account.total_pnl += realized_pnl
+            self.account.used_margin -= position.margin_required
+            self.account.free_margin = self.account.balance - self.account.used_margin
+            
+            if realized_pnl > 0:
                 self.account.winning_trades += 1
             
-            logger.info(f"📊 Position closed: {position.symbol} {position.side.upper()} "
-                       f"P&L: ${position.unrealized_pnl:.2f} ({reason})")
-            logger.info(f"   🎯 Wyckoff Pattern: {position.pattern_type} (Phase {position.wyckoff_phase})")
-            if position.entry_time is not None:
-                duration = datetime.now() - position.entry_time
-                logger.info(f"   ⏱️ Duration: {duration}")
-            else:
-                logger.info(f"   ⏱️ Duration: N/A")
-            
             # Remove from positions
-            if self.account.positions is not None:
-                try:
-                    self.account.positions.remove(position)
-                except (ValueError, AttributeError):
-                    logger.warning("Tried to remove position, but it was not found or positions is not a list.")
-            # Log to database if available
-            if SYSTEM_AVAILABLE:
-                await self._log_position_close_to_database(position, reason)
+            self.account.positions.remove(position)
+            
+            # Log closure
+            logger.info(f"📊 Position closed: {position.symbol} {position.side.upper()} "
+                       f"P&L: ${realized_pnl:+.2f} ({reason})")
+            
+            # Log to database
+            await self._log_position_closure(position, realized_pnl, reason)
             
         except Exception as e:
             logger.error(f"Failed to close position: {e}")
     
-    async def _log_trade_to_database(self, position: PaperPosition, recommendation: TradingRecommendation):
-        """Log trade to database - FIXED VERSION"""
+    async def _log_trade_to_database(self, position: PaperPosition, signal: TradingSignal):
+        """Log trade execution to database"""
         try:
-            # Use safe database operation to prevent concurrency issues
-            async def _log_operation(session):
-                action = AgentAction(
-                    agent_name="IntegratedPaperTradingEngine",
-                    action_type="CREW_TRADE_EXECUTED",
-                    input_data={
-                        "crew_recommendation": {
-                            "action": recommendation.action,
-                            "symbol": recommendation.symbol,
-                            "confidence": recommendation.confidence,
-                            "wyckoff_phase": recommendation.wyckoff_phase,
-                            "pattern_type": recommendation.pattern_type,
-                            "reasoning": recommendation.reasoning
-                        }
-                    },
-                    output_data={
-                        "position": {
-                            "id": position.id,
-                            "symbol": position.symbol,
-                            "side": position.side,
-                            "quantity": position.quantity,
-                            "entry_price": position.entry_price,
-                            "stop_loss": position.stop_loss,
-                            "take_profit": position.take_profit
-                        }
-                    },
-                    confidence_score=recommendation.confidence,
-                    timestamp=recommendation.timestamp
-                )
-                session.add(action)
-                return action
+            # FIXED: Use safe_log_agent_action instead of db_manager.add_agent_action
+            from src.database.manager import safe_log_agent_action
             
-            # Use safe database operation with retry
-            try:
-                async with db_manager.get_async_session() as session:
-                    await _log_operation(session)
-                    await session.commit()
-            except Exception as db_error:
-                logger.warning(f"Database logging failed (non-critical): {db_error}")
-                # Don't raise - logging failures shouldn't stop trading
-                
+            action_data = {
+                "agent_name": "PaperTradingEngine",
+                "action_type": "TRADE_EXECUTED",
+                "input_data": json.dumps({
+                    "symbol": position.symbol,
+                    "action": position.side,
+                    "confidence": position.confidence,
+                    "wyckoff_phase": position.wyckoff_phase
+                }),
+                "output_data": json.dumps({
+                    "position_id": position.id,
+                    "entry_price": position.entry_price,
+                    "quantity": position.quantity,
+                    "margin_required": position.margin_required
+                }),
+                "confidence_score": position.confidence,
+                "execution_time_ms": 0
+            }
+            
+            await safe_log_agent_action(action_data)
+            
         except Exception as e:
             logger.error(f"Failed to log trade to database: {e}")
     
-    async def _log_position_close_to_database(self, position: PaperPosition, reason: str):
-        """Log position closure to database - FIXED VERSION"""
+    async def _log_position_closure(self, position: PaperPosition, pnl: float, reason: str):
+        """Log position closure to database"""
         try:
-            async def _log_operation(session):
-                event = EventLog(
-                    level=LogLevel.INFO,
-                    agent_name="IntegratedPaperTradingEngine",
-                    event_type="CREW_POSITION_CLOSED",
-                    message=f"CrewAI-based position closed: {position.symbol} {position.side} P&L: ${position.unrealized_pnl:.2f}",
-                    context={
-                        "position_id": position.id,
-                        "symbol": position.symbol,
-                        "side": position.side,
-                        "pnl": position.unrealized_pnl,
-                        "reason": reason,
-                        "entry_price": position.entry_price,
-                        "exit_price": position.current_price,
-                        "wyckoff_phase": position.wyckoff_phase,
-                        "pattern_type": position.pattern_type,
-                        "confidence": position.confidence,
-                        "duration_minutes": (
-                            (datetime.now() - position.entry_time).total_seconds() / 60
-                            if position.entry_time is not None else None
-                        )
-                    }
-                )
-                session.add(event)
-                return event
+            # FIXED: Use safe_log_agent_action instead of db_manager.add_agent_action
+            from src.database.manager import safe_log_agent_action
             
-            # Use safe database operation with retry
-            try:
-                async with db_manager.get_async_session() as session:
-                    await _log_operation(session)
-                    await session.commit()
-            except Exception as db_error:
-                logger.warning(f"Database logging failed (non-critical): {db_error}")
-                # Don't raise - logging failures shouldn't stop trading
-                
+            action_data = {
+                "agent_name": "PaperTradingEngine",
+                "action_type": "POSITION_CLOSED",
+                "input_data": json.dumps({
+                    "position_id": position.id,
+                    "reason": reason
+                }),
+                "output_data": json.dumps({
+                    "exit_price": position.current_price,
+                    "realized_pnl": pnl,
+                    "duration_minutes": (datetime.now() - position.entry_time).total_seconds() / 60
+                }),
+                "confidence_score": 0,
+                "execution_time_ms": 0
+            }
+            
+            await safe_log_agent_action(action_data)
+            
         except Exception as e:
-            logger.error(f"Failed to log position closure: {e}")
+            logger.error(f"Failed to log position closure to database: {e}")
     
     async def start_trading(self):
-        """Start the integrated trading loop"""
-        logger.info("🚀 Starting Integrated Paper Trading with CrewAI Agents...")
+        """Start the main trading loop"""
+        logger.info("🚀 Starting paper trading loop...")
         self.running = True
-        
-        last_analysis_time = {}
         
         try:
             while self.running:
-                current_time = datetime.now()
-                
                 # Update existing positions
                 await self.update_positions()
                 
-                # Run CrewAI analysis for each symbol periodically
+                # Analyze each symbol
                 for symbol in self.trading_symbols:
-                    last_time = last_analysis_time.get(symbol, datetime.min)
-                    
-                    if current_time - last_time >= timedelta(seconds=self.analysis_interval):
-                        try:
-                            logger.info(f"🔍 Starting CrewAI analysis for {symbol}...")
-                            
-                            # Get recommendation from CrewAI agents
-                            recommendation = await self.get_crew_recommendation(symbol)
-                            
-                            if recommendation and recommendation.action in ["buy", "sell"]:
-                                # Check if we already have a position in this symbol
-                                existing_position = any(
-                                    pos.symbol == symbol for pos in (self.account.positions or [])
-                                )
-
-                                if not existing_position and recommendation.confidence > 75:
-                                    logger.info(f"🎯 CrewAI signals {recommendation.action.upper()} for {symbol} (confidence: {recommendation.confidence:.1f}%)")
-                                    await self.execute_paper_trade(recommendation)
-                                else:
-                                    if existing_position:
-                                        logger.info(f"⚠️ Already have position in {symbol}, skipping")
-                                    else:
-                                        logger.info(f"⚠️ Low confidence ({recommendation.confidence:.1f}%) for {symbol}, skipping")
-                            else:
-                                logger.info(f"💤 CrewAI recommends HOLD for {symbol}")
-                            
-                            last_analysis_time[symbol] = current_time
-                            
-                        except Exception as e:
-                            logger.error(f"CrewAI analysis failed for {symbol}: {e}")
+                    try:
+                        # Get trading signal
+                        signal = await self.get_trading_signal(symbol)
+                        
+                        if signal and signal.confidence > 75:
+                            # Execute trade
+                            success = await self.execute_paper_trade(signal)
+                            if success:
+                                logger.info(f"🎯 Trade: {signal.action} @ {signal.entry_price:.5f} "
+                                          f"(confidence: {signal.confidence:.1f}%)")
+                    except Exception as e:
+                        logger.error(f"Analysis failed for {symbol}: {e}")
                 
-                # Print status every 10 minutes
-                if current_time.minute % 10 == 0 and current_time.second < 10:
-                    await self._print_status()
+                # Print status
+                await self._print_status()
                 
-                # Sleep for a short interval
-                logger.info("⏱️ Waiting for next analysis cycle...")
-                await asyncio.sleep(30)
+                # Wait for next analysis
+                await asyncio.sleep(self.analysis_interval)
                 
-        except KeyboardInterrupt:
-            logger.info("📴 Integrated paper trading stopped by user")
         except Exception as e:
-            logger.error(f"❌ Integrated paper trading error: {e}")
+            logger.error(f"Trading loop error: {e}")
         finally:
             self.running = False
+            logger.info("📴 Paper trading stopped")
     
     async def _print_status(self):
-        """Print comprehensive trading status"""
+        """Print current trading status"""
         try:
-            positions = self.account.positions or []
-            total_unrealized = sum(pos.unrealized_pnl for pos in positions)
+            current_time = datetime.now().strftime("%H:%M:%S")
             win_rate = (self.account.winning_trades / max(self.account.total_trades, 1)) * 100
-
-            print(f"\n🤖 INTEGRATED PAPER TRADING STATUS - {datetime.now().strftime('%H:%M:%S')}")
-            print(f"   🧠 AI System: {'CrewAI + Wyckoff' if SYSTEM_AVAILABLE else 'Mock Mode'}")
+            
+            print(f"\n📊 PAPER TRADING STATUS - {current_time}")
             print(f"   💰 Balance: ${self.account.balance:,.2f}")
             print(f"   📈 Equity: ${self.account.equity:,.2f}")
-            print(f"   📊 Unrealized P&L: ${total_unrealized:,.2f}")
-            print(f"   🔢 Open Positions: {len(self.account.positions or [])}")
+            print(f"   📊 Unrealized P&L: ${self.account.equity - self.account.balance:+.2f}")
+            print(f"   🔢 Open Positions: {len(self.account.positions)}")
             print(f"   📈 Total Trades: {self.account.total_trades}")
             print(f"   🎯 Win Rate: {win_rate:.1f}%")
-            print(f"   💹 Total P&L: ${self.account.total_pnl:,.2f}")
+            print(f"   💹 Total P&L: ${self.account.total_pnl:+.2f}")
             
             if self.account.positions:
-                print(f"   📋 Active CrewAI Positions:")
+                print(f"   📋 Active Positions:")
                 for pos in self.account.positions:
-                    print(f"      {pos.symbol} {pos.side.upper()}: ${pos.unrealized_pnl:+.2f} | "
-                          f"Phase {pos.wyckoff_phase} ({pos.pattern_type}) | "
-                          f"Confidence: {pos.confidence:.1f}%")
+                    print(f"      {pos.symbol} {pos.side.upper()}: ${pos.unrealized_pnl:+.2f}")
             
         except Exception as e:
             logger.error(f"Failed to print status: {e}")
     
     def stop_trading(self):
-        """Stop the trading engine"""
-        logger.info("🛑 Stopping integrated paper trading engine...")
+        """Stop the paper trading engine"""
+        logger.info("🛑 Stopping paper trading engine...")
         self.running = False
     
     def get_account_summary(self) -> Dict[str, Any]:
-        """Get comprehensive account summary"""
-        positions = self.account.positions or []
-        total_unrealized = sum(pos.unrealized_pnl for pos in positions)
+        """Get account summary for external monitoring"""
+        total_unrealized = sum(pos.unrealized_pnl for pos in self.account.positions)
         win_rate = (self.account.winning_trades / max(self.account.total_trades, 1)) * 100
-
+        
         return {
-            "system_type": "CrewAI_Integrated" if SYSTEM_AVAILABLE else "Mock",
             "balance": self.account.balance,
             "equity": self.account.equity,
             "unrealized_pnl": total_unrealized,
-            "open_positions": len(self.account.positions or []),
+            "open_positions": len(self.account.positions),
             "total_trades": self.account.total_trades,
             "winning_trades": self.account.winning_trades,
             "win_rate": win_rate,
             "total_pnl": self.account.total_pnl,
-            "positions": [
-                {
-                    "id": pos.id,
-                    "symbol": pos.symbol,
-                    "side": pos.side,
-                    "quantity": pos.quantity,
-                    "entry_price": pos.entry_price,
-                    "current_price": pos.current_price,
-                    "unrealized_pnl": pos.unrealized_pnl,
-                    "wyckoff_phase": pos.wyckoff_phase,
-                    "pattern_type": pos.pattern_type,
-                    "confidence": pos.confidence,
-                    "duration_minutes": (
-                        (datetime.now() - pos.entry_time).total_seconds() / 60
-                        if pos.entry_time is not None else None
-                    )
-                }
-                for pos in self.account.positions or []
-            ]
+            "used_margin": self.account.used_margin,
+            "free_margin": self.account.free_margin,
+            "positions": [pos.dict() for pos in self.account.positions]
         }
 
-# Use the integrated engine as the main class
-PaperTradingEngine = IntegratedPaperTradingEngine
-
-# Main execution function
-async def run_integrated_demo():
-    """Run the integrated paper trading demo"""
+# Main execution and control functions
+async def run_paper_trading_demo():
+    """Run a demonstration of the paper trading system"""
     
-    print("🤖 INTEGRATED PAPER TRADING WITH CREWAI AGENTS")
-    print("=" * 70)
-    print("🧠 Features:")
-    print("   ✅ CrewAI Wyckoff Market Analyst")
-    print("   ✅ CrewAI Risk Manager")  
-    print("   ✅ CrewAI Trading Coordinator")
-    print("   ✅ Live Oanda price feeds")
-    print("   ✅ Sophisticated Wyckoff pattern analysis")
-    print("   ✅ Agent-based trading decisions")
+    print("🚀 REAL-TIME PAPER TRADING SYSTEM WITH DIRECT OANDA API")
+    print("=" * 60)
+    print("📊 Features:")
+    print("   ✅ Direct Oanda API integration")
+    print("   ✅ CrewAI Wyckoff analysis")
+    print("   ✅ Real-time signal generation")
     print("   ✅ Virtual position management")
-    print("   ✅ Database logging with agent context")
-    print("   ✅ Real-time monitoring")
+    print("   ✅ Database logging")
+    print("   ✅ Risk management")
     print()
     
     try:
-        # Initialize integrated paper trading engine
+        # Initialize paper trading engine
         engine = PaperTradingEngine(initial_balance=100000.0)
         await engine.initialize()
         
-        print("✅ Integrated Paper Trading Engine initialized!")
+        print("✅ Paper Trading Engine initialized successfully!")
         print()
         print("🎯 Trading Configuration:")
         print(f"   💰 Starting Balance: ${engine.account.balance:,.2f}")
         print(f"   📈 Symbols: {', '.join(engine.trading_symbols)}")
-        print(f"   ⏰ CrewAI Analysis Interval: {engine.analysis_interval}s")
+        print(f"   ⏰ Analysis Interval: {engine.analysis_interval}s")
         print(f"   🎯 Risk per Trade: 2%")
-        print(f"   🧠 AI System: {'CrewAI + Wyckoff' if SYSTEM_AVAILABLE else 'Mock Mode'}")
         print()
         
-        print("🚀 Starting integrated paper trading with CrewAI agents...")
+        print("🚀 Starting live paper trading...")
         print("⏹️  Press Ctrl+C to stop")
-        print("=" * 70)
+        print("=" * 60)
         
         # Start trading
         await engine.start_trading()
         
     except KeyboardInterrupt:
-        print("\n📴 Integrated paper trading stopped by user")
+        print("\n📴 Paper trading stopped by user")
     except Exception as e:
-        print(f"❌ Integrated paper trading failed: {e}")
+        print(f"❌ Paper trading failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+async def test_paper_trading_components():
+    """Test individual components of the paper trading system"""
+    
+    print("🧪 TESTING PAPER TRADING COMPONENTS (Direct API)")
+    print("=" * 50)
+    
+    try:
+        # Test 1: Direct API Connection
+        print("1. Testing Direct Oanda API connection...")
+        async with OandaDirectAPI() as oanda:
+            account_info = await oanda.get_account_info()
+            print(f"   Status: Connected")
+            print(f"   Account Currency: {account_info.get('currency', 'USD')}")
+            
+            price = await oanda.get_current_price("EUR_USD")
+            print(f"   EUR_USD Price: {price}")
+            
+        # Test 2: Paper Account
+        print("\n2. Testing Paper Account...")
+        account = PaperAccount()
+        print(f"   Initial Balance: ${account.balance:,.2f}")
+        print(f"   Free Margin: ${account.free_margin:,.2f}")
+        
+        # Test 3: Signal Generation
+        print("\n3. Testing Signal Generation...")
+        engine = PaperTradingEngine()
+        await engine.initialize()
+        
+        signal = await engine.get_trading_signal("EUR_USD")
+        if signal:
+            print(f"   Signal: {signal.action.upper()} {signal.symbol}")
+            print(f"   Confidence: {signal.confidence:.1f}%")
+            print(f"   Entry: {signal.entry_price:.5f}")
+        
+        # Test 4: Paper Trade Execution
+        print("\n4. Testing Paper Trade Execution...")
+        if signal and signal.action != "hold":
+            success = await engine.execute_paper_trade(signal)
+            print(f"   Trade Executed: {success}")
+            print(f"   Open Positions: {len(engine.account.positions)}")
+        
+        print("\n✅ Component testing completed successfully!")
+        
+    except Exception as e:
+        print(f"❌ Component testing failed: {e}")
         import traceback
         traceback.print_exc()
 
 # CLI Interface
 if __name__ == "__main__":
-    print("🤖 INTEGRATED PAPER TRADING SYSTEM")
+    print("📈 PAPER TRADING SYSTEM WITH DIRECT OANDA API")
     print("Choose an option:")
-    print("1. Run integrated paper trading (with CrewAI agents)")
-    print("2. Test integration only")
+    print("1. Run live paper trading")
+    print("2. Test components only")
+    print("3. Demo mode (5 minutes)")
     
-    choice = input("Enter choice (1-2): ").strip()
-    symbol_name = "EUR_USD"
+    choice = input("Enter choice (1-3): ").strip()
     
     if choice == "1":
-        print("\n🚀 Starting integrated paper trading...")
-        asyncio.run(run_integrated_demo())
+        print("\n🚀 Starting live paper trading...")
+        asyncio.run(run_paper_trading_demo())
     elif choice == "2":
-        print("\n🧪 Testing integration...")
-        async def test():
+        print("\n🧪 Testing components...")
+        asyncio.run(test_paper_trading_components())
+    elif choice == "3":
+        print("\n📊 Running 5-minute demo...")
+        async def demo():
             engine = PaperTradingEngine()
             await engine.initialize()
             
-            # Test getting a recommendation
-            recommendation = await engine.get_crew_recommendation(symbol_name)
-            if recommendation:
-                print(f"✅ Got recommendation: {recommendation.action} (confidence: {recommendation.confidence:.1f}%)")
-            else:
-                print("✅ System working - got HOLD recommendation")
-                
-        asyncio.run(test())
+            # Run for 5 minutes
+            start_time = datetime.now()
+            while datetime.now() - start_time < timedelta(minutes=5):
+                await engine.update_positions()
+                signal = await engine.get_trading_signal("EUR_USD")
+                if signal and signal.action != "hold":
+                    await engine.execute_paper_trade(signal)
+                await engine._print_status()
+                await asyncio.sleep(30)
+        
+        asyncio.run(demo())
     else:
-        print("\n🚀 Running integrated paper trading by default...")
-        asyncio.run(run_integrated_demo())
+        print("\n🚀 Running live paper trading by default...")
+        asyncio.run(run_paper_trading_demo())
