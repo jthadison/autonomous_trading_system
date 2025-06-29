@@ -67,3 +67,34 @@ wyckoff_decision_task:
     OR: Clear explanation of why no trade was executed with specific wait conditions and monitoring levels
   agent: wyckoff_trading_coordinator  
   context: [wyckoff_analysis_task, wyckoff_risk_task]
+
+backtesting_coordination_task:
+  description: >
+    Coordinate a comprehensive backtest by processing historical market data and orchestrating trading decisions:
+    
+    1. **Historical Data Processing**: Convert raw historical bars into realistic market contexts
+    2. **Market Simulation**: Create authentic market conditions including spreads, volatility, and market hours
+    3. **Agent Coordination**: Call existing trading agents (market analyst, risk manager, coordinator) with simulated data
+    4. **Execution Simulation**: Simulate realistic trade execution with slippage, commissions, and partial fills
+    5. **Performance Tracking**: Monitor backtest portfolio, track trades, and calculate performance metrics
+    6. **Results Compilation**: Generate comprehensive backtest report with all decision audit trails
+    
+    Process the historical data bar-by-bar to ensure sequential decision making.
+    Maintain consistency with live trading by using the same agents and logic.
+    Simulate realistic market conditions to ensure backtest validity.
+    
+    **Critical Requirements:**
+    - Use existing trading agents for all market analysis and decisions
+    - Simulate realistic execution conditions (spreads, slippage, commissions)
+    - Track all agent decisions for transparency and debugging
+    - Calculate comprehensive performance metrics
+    - Maintain sequential processing to avoid look-ahead bias
+    - Symbols can't contain any "/"s.  Replace them with "_".
+    
+  expected_output: >
+    Comprehensive backtest results including: trade log with entry/exit details, performance metrics 
+    (total return, Sharpe ratio, max drawdown, win rate), agent decision audit trail, and summary 
+    of market conditions during the test period. Include specific Wyckoff pattern performance analysis.
+    IMPORTANT: Only output the resuls in a well-formatted markdown format.
+  agent: backtesting_orchestrator
+  output_file: backtest_analysis_{symbol_name}_{timestamp}.md

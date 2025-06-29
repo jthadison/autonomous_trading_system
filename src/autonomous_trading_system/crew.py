@@ -4,6 +4,7 @@ Integrates the new trading execution tools with existing Wyckoff analysis agents
 """
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -13,11 +14,13 @@ from typing import Dict, List, Any
 from crewai.utilities.events.third_party.agentops_listener import agentops
 from mcp_servers.oanda_direct_api import OandaDirectAPI
 
-# Add src to path
-sys.path.append(str(Path(__file__).parent / "src"))
+# Add project root to path
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 #from autonomous_trading_system.trading_dashboard import get_historical_data
-from autonomous_trading_system.utils.wyckoff_pattern_analyzer import wyckoff_analyzer
+from src.autonomous_trading_system.utils.wyckoff_pattern_analyzer import wyckoff_analyzer
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from typing import List
@@ -33,6 +36,13 @@ from pydantic import PydanticDeprecatedSince20
 from langchain_anthropic import ChatAnthropic
 import warnings
 import os
+
+from src.backtesting.backtesting_simulation_tools import (
+    simulate_historical_market_context,
+    simulate_trade_execution,
+    update_backtest_portfolio,
+    calculate_backtest_performance_metrics
+)
 
 from dotenv import load_dotenv
 load_dotenv(override=True)
@@ -225,6 +235,25 @@ class AutonomousTradingSystem():
             verbose=True,
             max_iter=3
         )
+        
+    @agent
+    def backtesting_orchestrator(self) -> Agent:
+        """Agent responsible for coordinating backtests and simulating market conditions"""
+        return Agent(
+            config=self.agents_config['backtesting_orchestrator'], # type: ignore[index]
+            tools=[
+                # Historical market simulation tools
+                simulate_historical_market_context,
+                simulate_trade_execution,
+                update_backtest_portfolio,
+                calculate_backtest_performance_metrics,
+                
+                # Access to existing tools for coordination
+                get_historical_data,  # To load historical data
+            ],
+            verbose=True,
+            max_iter=5
+        )
 
     @task
     def wyckoff_analysis_task(self) -> Task:
@@ -243,7 +272,41 @@ class AutonomousTradingSystem():
         return Task(
             config=self.tasks_config['wyckoff_decision_task'], # type: ignore[index]
         )
+        
+    @task
+    def backtesting_coordination_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['backtesting_coordination_task'], # type: ignore[index]
+        )
 
+    @crew
+    def backtesting_crew(self) -> Crew:
+        """Creates a specialized backtesting crew that uses existing trading agents"""
+        return Crew(
+            agents=[
+                # Backtesting coordinator (call the method to get Agent instance)
+                self.backtesting_orchestrator(),
+                
+                # Existing trading agents for decision making (call methods)
+                self.wyckoff_market_analyst(),
+                self.wyckoff_risk_manager(), 
+                self.wyckoff_trading_coordinator()
+            ],
+            tasks=[
+                # Main backtesting task (call the method to get Task instance)
+                self.backtesting_coordination_task(),
+                
+                # You can also include existing tasks if needed
+                # self.wyckoff_analysis_task(),
+                # self.wyckoff_risk_task(),
+                # self.wyckoff_decision_task()
+            ],
+            process=Process.sequential,
+            verbose=True,
+            memory=True,
+            step_callback=lambda step: time.sleep(3)
+        )
+        
     @crew
     def crew(self) -> Crew:
         """Creates the AutonomousTradingSystem crew with full execution capabilities"""
@@ -255,6 +318,8 @@ class AutonomousTradingSystem():
             memory=True,
             step_callback=lambda step: time.sleep(3)
         )
+        
+    
 
     # Optional: Add execution monitoring methods
     async def monitor_executions(self, check_interval_seconds: int = 30):
@@ -284,8 +349,10 @@ class AutonomousTradingSystem():
             # Set up inputs for the crew
             inputs = {
                 'topic': 'Wyckoff Trading Analysis',
+                'symbol': symbol_name,
                 'symbol_name': symbol_name,
-                'current_year': str(datetime.now().year)
+                'current_year': str(datetime.now().year),
+                'timestamp': time.time()
             }
             
             logger.info(
@@ -312,3 +379,117 @@ class AutonomousTradingSystem():
                 error=str(e)
             )
             raise Exception(f"Trading session error: {e}")
+        
+    def run_agent_backtest(
+        self, 
+        historical_data: List[Dict], 
+        initial_balance: float = 100000,
+        symbol: str = "EUR_USD"
+    ) -> Dict[str, Any]:
+        """
+        Run a complete backtest using the backtesting crew
+        
+        Args:
+            historical_data: List of OHLC bars
+            initial_balance: Starting capital
+            symbol: Trading symbol
+        
+        Returns:
+            Complete backtest results
+        """
+        try:
+            logger.info(f"🤖 Starting agent-based backtest with {len(historical_data)} bars")
+            
+            # Initialize backtesting crew
+            backtest_crew = self.backtesting_crew()
+            
+            # Prepare backtest inputs
+            backtest_inputs = {
+                'historical_data': json.dumps(historical_data),
+                'initial_balance': initial_balance,
+                'symbol': symbol,
+                'symbol_name': symbol,
+                'start_date': historical_data[0]['timestamp'] if historical_data else None,
+                'end_date': historical_data[-1]['timestamp'] if historical_data else None,
+                'total_bars': len(historical_data),
+                'timestamp': time.time()
+            }
+            
+            # Execute backtest - use correct CrewAI syntax
+            logger.info("🚀 Executing backtesting crew...")
+            result = backtest_crew.kickoff(inputs=backtest_inputs)
+            
+            # Parse and return results
+            logger.info("✅ Backtest completed successfully")
+            return {
+                'success': True,
+                'result': result,
+                'total_bars_processed': len(historical_data),
+                'symbol': symbol,
+                'initial_balance': initial_balance
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Backtest failed: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    # Example usage method you can add to test the backtesting agent
+    async def test_backtesting_orchestrator(self):
+        """
+        Test the backtesting orchestrator with sample data
+        """
+        # Sample historical data for testing
+        sample_data = [
+            {
+                'timestamp': '2024-01-01T09:00:00',
+                'open': 1.1000,
+                'high': 1.1050,
+                'low': 1.0990,
+                'close': 1.1030,
+                'volume': 1000
+            },
+            {
+                'timestamp': '2024-01-01T09:15:00', 
+                'open': 1.1030,
+                'high': 1.1080,
+                'low': 1.1020,
+                'close': 1.1060,
+                'volume': 1200
+            },
+            # Add more sample bars as needed...
+        ]
+        
+        logger.info("🧪 Testing backtesting orchestrator agent...")
+        
+        # Test market context simulation
+        market_context = simulate_historical_market_context(
+            historical_bars=json.dumps(sample_data),
+            current_bar_index=1,
+            account_info=json.dumps({
+                'balance': 100000,
+                'equity': 100000,
+                'margin_available': 50000
+            })
+        )
+        
+        logger.info("✅ Market context simulation successful")
+        logger.info(f"Market context: {market_context}")
+        
+        # Test trade execution simulation
+        execution_result = simulate_trade_execution(
+            trade_decision=json.dumps({
+                'side': 'buy',
+                'quantity': 10000,
+                'order_type': 'market',
+                'symbol': 'EUR_USD'
+            }),
+            market_context=market_context
+        )
+        
+        logger.info("✅ Trade execution simulation successful")
+        logger.info(f"Execution result: {execution_result}")
+        
+        return True
