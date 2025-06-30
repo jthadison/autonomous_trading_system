@@ -50,7 +50,7 @@ class EnhancedPaperTradingEngine:
         self.trading_crew = AutonomousTradingSystem()
         
         self.running = False
-        self.trading_symbols = ["EUR_USD"]
+        self.trading_symbols = ["US30","EUR_USD"]
         self.analysis_interval = 60  # seconds
         self.price_cache = {}
         
@@ -85,10 +85,12 @@ class EnhancedPaperTradingEngine:
             inputs = {
                 'topic': 'Live Trading Analysis',
                 'symbol_name': symbol,
+                'symbol': symbol,
                 'current_year': str(datetime.now().year),
                 'analysis_type': 'paper_trading',
                 'account_balance': self.account.balance,
-                'risk_tolerance': 'moderate'
+                'risk_tolerance': 'moderate',
+                'timestamp': str(datetime.now().timestamp()).replace('.','')
             }
             
             # EXECUTE THE EXISTING SOPHISTICATED CREW

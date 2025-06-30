@@ -352,7 +352,7 @@ class AutonomousTradingSystem():
                 'symbol': symbol_name,
                 'symbol_name': symbol_name,
                 'current_year': str(datetime.now().year),
-                'timestamp': time.time()
+                'timestamp': str(datetime.now().timestamp()).replace('.','')
             }
             
             logger.info(
@@ -412,7 +412,7 @@ class AutonomousTradingSystem():
                 'start_date': historical_data[0]['timestamp'] if historical_data else None,
                 'end_date': historical_data[-1]['timestamp'] if historical_data else None,
                 'total_bars': len(historical_data),
-                'timestamp': time.time()
+                'timestamp': str(datetime.now().timestamp()).replace('.','')
             }
             
             # Execute backtest - use correct CrewAI syntax
