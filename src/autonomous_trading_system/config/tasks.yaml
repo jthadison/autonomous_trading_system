@@ -57,11 +57,59 @@ wyckoff_decision_task:
     2. Check account status using get_account_info
     3. Review portfolio using get_portfolio_status
     4. If analysis shows a valid Wyckoff setup (>75% confidence):
-       - Execute trade using execute_market_trade or execute_limit_trade
-       - Include stop loss and take profit levels
-    5. If no valid setup, explain why and specify wait conditions
+       
+       **For MARKET ORDERS (immediate execution):**
+       Use execute_market_trade with ALL required parameters:
+       - instrument: "{symbol_name}" (or the symbol)
+       - side: "buy" or "sell" 
+       - units: (position size from risk manager)
+       - stop_loss: (calculated stop level)
+       - take_profit: (calculated target level)
+       - reason: "Wyckoff [Phase] [pattern] setup"
+       - max_slippage: 0.002 (REQUIRED - set to 0.002)
+       
+       **For LIMIT ORDERS (entry at specific price):**
+       Use execute_limit_trade with ALL required parameters:
+       - instrument: "{symbol_name}" (or the symbol)
+       - side: "buy" or "sell"
+       - units: (position size from risk manager)
+       - price: (limit entry price)
+       - stop_loss: (calculated stop level)
+       - take_profit: (calculated target level)
+       - reason: "Wyckoff [Phase] [pattern] setup"
+       - expiry_time: "GTC" (REQUIRED - set to "GTC")
+       
+    5. If no valid setup (confidence <75%), use get_live_price and explain why
     
-    You MUST use the available tools - do not try to use "None" as an action.
+    **CRITICAL RULES:**
+    - You MUST use one of the available tools in every response
+    - NEVER omit max_slippage for execute_market_trade
+    - NEVER omit expiry_time for execute_limit_trade  
+    - NEVER use "Action: None" - it doesn't exist
+    - Include ALL parameters - no shortcuts
+    
+    **Example Market Trade:**
+    execute_market_trade({
+      "instrument": "{symbol_name}",
+      "side": "sell",
+      "units": 10000,
+      "stop_loss": 1.1800,
+      "take_profit": 1.1650,
+      "reason": "Wyckoff Phase D distribution setup",
+      "max_slippage": 0.002
+    })
+    
+    **Example Limit Trade:**
+    execute_limit_trade({
+      "instrument": "{symbol_name}", 
+      "side": "sell",
+      "units": 10000,
+      "price": 1.1750,
+      "stop_loss": 1.1800,
+      "take_profit": 1.1650,
+      "reason": "Wyckoff Phase D distribution setup",
+      "expiry_time": "GTC"
+    })
   expected_output: >
     EITHER: Successful trade execution with order ID, entry price, stop loss, take profit, and detailed Wyckoff reasoning
     OR: Clear explanation of why no trade was executed with specific wait conditions and monitoring levels
@@ -95,6 +143,6 @@ backtesting_coordination_task:
     Comprehensive backtest results including: trade log with entry/exit details, performance metrics 
     (total return, Sharpe ratio, max drawdown, win rate), agent decision audit trail, and summary 
     of market conditions during the test period. Include specific Wyckoff pattern performance analysis.
-    IMPORTANT: Only output the resuls in a well-formatted markdown format.
+    IMPORTANT: Only output the resuls in a well-formatted markdown document.
   agent: backtesting_orchestrator
-  output_file: backtest_analysis_{symbol_name}_{timestamp}.md
+  output_file: backtest_results/backtest_analysis_{symbol_name}_{timestamp}.md

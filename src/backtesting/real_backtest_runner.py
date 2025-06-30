@@ -1,6 +1,6 @@
 """
 Real Historical Data Backtest Runner
-Fetches actual market data from Oanda MCP server for agent-based backtesting
+Fetches actual market data from Oanda Direct API for agent-based backtesting
 """
 
 import sys
@@ -10,63 +10,79 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 # Add project root to path
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from src.config.logging_config import logger
 from src.autonomous_trading_system.crew import AutonomousTradingSystem
 
-# Import simulation tools for direct testing (with proper calling method)
-from src.backtesting.backtesting_simulation_tools import (
-    simulate_historical_market_context,
-    simulate_trade_execution,
-    update_backtest_portfolio,
-    calculate_backtest_performance_metrics
-)
+from src.backtesting.enhanced_backtest_integration import run_enhanced_agent_testing
 
 async def get_real_historical_data(
-    symbol: str = "EUR_USD", 
-    timeframe: str = "M15", 
-    bars: int = 100,
+    symbol, 
+    timeframe, 
+    bars,
     max_retries: int = 3
 ):
     """
-    FIXED VERSION: Get real historical data from Oanda MCP server with correct parsing
-    Based on diagnostic results showing actual Oanda data structure
+    UPDATED VERSION: Get real historical data from Oanda Direct API with correct parsing
     """
     
-    logger.info(f"📊 Fetching {bars} bars of {symbol} {timeframe} data from Oanda...")
+    logger.info(f"📊 Fetching {bars} bars of {symbol} {timeframe} data from Oanda Direct API...")
     
     for attempt in range(max_retries):
         try:
-            from src.mcp_servers.oanda_mcp_wrapper import OandaMCPWrapper
+            # UPDATED: Import OandaDirectAPI instead of OandaMCPWrapper
+            from src.mcp_servers.oanda_direct_api import OandaDirectAPI
             
-            async with OandaMCPWrapper("http://localhost:8000") as oanda:
+            # UPDATED: No URL needed for direct API
+            async with OandaDirectAPI() as oanda:
                 # Test connection first
                 health = await oanda.health_check()
                 if health.get("status") != "healthy":
-                    logger.warning(f"⚠️ Oanda server not healthy: {health}")
+                    logger.warning(f"⚠️ Oanda API not healthy: {health}")
                     if attempt < max_retries - 1:
                         logger.info(f"🔄 Retrying in 2 seconds... (attempt {attempt + 1}/{max_retries})")
                         await asyncio.sleep(2)
                         continue
                     else:
-                        raise Exception("Oanda server not healthy after all retries")
+                        raise Exception("Oanda API not healthy after all retries")
+                
+                # UPDATED: Map timeframe for Oanda API (M15 -> M15, etc.)
+                granularity_map = {
+                    "M1": "M1",
+                    "M5": "M5", 
+                    "M15": "M15",
+                    "M30": "M30",
+                    "H1": "H1",
+                    "H4": "H4",
+                    "D": "D"
+                }
+                oanda_granularity = granularity_map.get(timeframe, timeframe)
                 
                 # Get historical data
-                historical_result = await oanda.get_historical_data(symbol, timeframe, bars)
+                # Ensure oanda_granularity is not None before passing to API
+                if oanda_granularity is None:
+                    raise ValueError(f"Invalid timeframe '{timeframe}' - could not map to Oanda granularity")
+                
+                historical_result = await oanda.get_historical_data(
+                    instrument=symbol,
+                    granularity=oanda_granularity,
+                    count=bars
+                )
                 
                 # DEBUG: Log the raw response structure
                 logger.info(f"🔍 Raw response type: {type(historical_result)}")
                 if isinstance(historical_result, dict):
                     logger.info(f"🔍 Response keys: {list(historical_result.keys())}")
                 
-                # CORRECT PARSING based on diagnostic results
+                # UPDATED: Parse OandaDirectAPI response format
                 data = None
                 
                 if isinstance(historical_result, dict):
-                    # Expected structure: {'success': True, 'data': {'candles': [...]}}
+                    # Expected structure from OandaDirectAPI: 
+                    # {'success': True, 'data': {'candles': [...]}, 'instrument': '...', 'granularity': '...'}
                     if historical_result.get('success') and 'data' in historical_result:
                         oanda_data = historical_result['data']
                         
@@ -75,11 +91,11 @@ async def get_real_historical_data(
                             logger.info(f"🔍 Data section keys: {list(oanda_data.keys())}")
                             
                             # Check actual granularity returned vs requested
-                            actual_granularity = oanda_data.get('granularity', 'Unknown')
+                            actual_granularity = historical_result.get('granularity', 'Unknown')
                             logger.info(f"📊 Requested: {timeframe}, Got: {actual_granularity}")
                             
-                            if actual_granularity != timeframe:
-                                logger.warning(f"⚠️ Granularity mismatch: requested {timeframe}, got {actual_granularity}")
+                            if actual_granularity != oanda_granularity:
+                                logger.warning(f"⚠️ Granularity mismatch: requested {oanda_granularity}, got {actual_granularity}")
                             
                             # Extract the candles array
                             if 'candles' in oanda_data:
@@ -91,7 +107,8 @@ async def get_real_historical_data(
                             # Fallback: try direct data access
                             data = oanda_data
                     else:
-                        raise Exception(f"Invalid response structure: {historical_result}")
+                        error_msg = historical_result.get('error', 'Unknown error')
+                        raise Exception(f"API request failed: {error_msg}")
                 else:
                     raise Exception(f"Expected dict response, got: {type(historical_result)}")
                 
@@ -102,7 +119,7 @@ async def get_real_historical_data(
                 if not isinstance(data, list):
                     raise Exception(f"Expected list of candles, got: {type(data)}")
                 
-                logger.info(f"✅ Retrieved {len(data)} candles from Oanda")
+                logger.info(f"✅ Retrieved {len(data)} candles from Oanda Direct API")
                 
                 # Validate minimum data requirements
                 min_required_bars = max(2, bars * 0.1)  # At least 2 bars or 10% of requested
@@ -115,17 +132,16 @@ async def get_real_historical_data(
                 if len(data) < bars * 0.8:  # Less than 80% of requested
                     logger.warning(f"⚠️ Only got {len(data)} candles out of {bars} requested")
                 
-                # ENHANCED CANDLE PARSING based on diagnostic results
+                # UPDATED: Enhanced candle parsing for OandaDirectAPI format
                 formatted_data = []
                 valid_bars = 0
                 
                 for i, candle in enumerate(data):
                     try:
-                        # Expected candle structure from diagnostic:
+                        # Expected candle structure from OandaDirectAPI:
                         # {
-                        #   "complete": True,
-                        #   "volume": 181047,
                         #   "time": "2025-06-15T21:00:00.000000000Z",
+                        #   "volume": 181047,
                         #   "mid": {"o": "1.15332", "h": "1.16148", "l": "1.15237", "c": "1.15609"}
                         # }
                         
@@ -139,7 +155,7 @@ async def get_real_historical_data(
                             logger.warning(f"⚠️ No timestamp in candle {i}")
                             continue
                         
-                        # Extract OHLC from 'mid' section (based on diagnostic)
+                        # Extract OHLC from 'mid' section
                         mid_data = candle.get('mid', {})
                         if not isinstance(mid_data, dict):
                             logger.warning(f"⚠️ No 'mid' data in candle {i}: {candle}")
@@ -216,38 +232,50 @@ async def get_real_historical_data(
                 return None
 
 async def validate_oanda_connection():
-    """Test Oanda MCP server connection before running backtests"""
+    """Test Oanda Direct API connection before running backtests"""
     
-    logger.info("🔌 Testing Oanda MCP server connection...")
+    logger.info("🔌 Testing Oanda Direct API connection...")
     
     try:
-        from src.mcp_servers.oanda_mcp_wrapper import OandaMCPWrapper
+        # UPDATED: Import OandaDirectAPI
+        from src.mcp_servers.oanda_direct_api import OandaDirectAPI
         
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
+        # UPDATED: No URL parameter needed
+        async with OandaDirectAPI() as oanda:
             # Test health
             health = await oanda.health_check()
-            logger.info(f"🏥 Server health: {health.get('status', 'unknown')}")
+            logger.info(f"🏥 API health: {health.get('status', 'unknown')}")
             
             if health.get("status") != "healthy":
-                logger.error("❌ Oanda server not healthy")
+                logger.error("❌ Oanda Direct API not healthy")
                 return False
             
             # Test account info
             account = await oanda.get_account_info()
-            if 'balance' in account:
-                logger.info(f"💰 Account balance: ${account.get('balance', 'N/A')}")
+            if account.get('success') and 'balance' in account:
+                logger.info(f"💰 Account balance: ${account.get('balance', 'N/A'):,.2f}")
+                logger.info(f"💱 Account currency: {account.get('currency', 'N/A')}")
+                logger.info(f"📊 Environment: {account.get('environment', 'N/A')}")
+            else:
+                logger.warning(f"⚠️ Account info error: {account.get('error', 'Unknown')}")
             
             # Test current price
             price = await oanda.get_current_price("EUR_USD")
-            if 'data' in price:
-                current_price = price['data'].get('c', 'N/A')
-                logger.info(f"💱 Current EUR_USD: {current_price}")
+            if price.get('success'):
+                current_price = price.get('price', 'N/A')
+                bid = price.get('bid', 'N/A')
+                ask = price.get('ask', 'N/A')
+                spread = price.get('spread', 'N/A')
+                logger.info(f"💱 Current EUR_USD: {current_price} (Bid: {bid}, Ask: {ask}, Spread: {spread})")
+            else:
+                logger.warning(f"⚠️ Price data error: {price.get('error', 'Unknown')}")
             
-            logger.info("✅ Oanda connection validated successfully")
+            logger.info("✅ Oanda Direct API connection validated successfully")
             return True
             
     except Exception as e:
-        logger.error(f"❌ Oanda connection test failed: {e}")
+        logger.error(f"❌ Oanda Direct API connection test failed: {e}")
+        logger.error("💡 Make sure you have set OANDA_API_KEY, OANDA_ACCOUNT_ID, and OANDA_ENVIRONMENT in your .env file")
         return False
 
 def generate_fallback_data(num_bars: int = 50, symbol: str = "EUR_USD") -> list:
@@ -324,7 +352,7 @@ async def run_real_data_backtest(
     initial_balance: float = 100000
 ):
     """
-    Run backtest with real historical data from Oanda
+    Run backtest with real historical data from Oanda Direct API
     
     Args:
         symbol: Trading symbol
@@ -333,18 +361,18 @@ async def run_real_data_backtest(
         initial_balance: Starting capital
     """
     
-    logger.info("🚀 REAL HISTORICAL DATA BACKTEST")
+    logger.info("🚀 REAL HISTORICAL DATA BACKTEST (Oanda Direct API)")
     logger.info("=" * 50)
     
     try:
         # Step 1: Validate Oanda connection
-        logger.info("🔌 Step 1: Validating Oanda connection...")
+        logger.info("🔌 Step 1: Validating Oanda Direct API connection...")
         connection_ok = await validate_oanda_connection()
         
         if not connection_ok:
-            logger.error("❌ Cannot proceed without Oanda connection")
-            logger.info("💡 Make sure your BJLG-92 Oanda MCP server is running on localhost:8000")
-            return {'success': False, 'error': 'Oanda connection failed'}
+            logger.error("❌ Cannot proceed without Oanda Direct API connection")
+            logger.info("💡 Check your .env file for OANDA_API_KEY, OANDA_ACCOUNT_ID, and OANDA_ENVIRONMENT")
+            return {'success': False, 'error': 'Oanda Direct API connection failed'}
         
         # Step 2: Fetch real historical data
         logger.info(f"📊 Step 2: Fetching real {symbol} {timeframe} data...")
@@ -406,7 +434,7 @@ async def run_real_data_backtest(
 async def run_multi_symbol_backtest():
     """Run backtests on multiple symbols with real data"""
     
-    logger.info("🌍 MULTI-SYMBOL REAL DATA BACKTEST")
+    logger.info("🌍 MULTI-SYMBOL REAL DATA BACKTEST (Oanda Direct API)")
     logger.info("=" * 50)
     
     # Major currency pairs
@@ -414,7 +442,7 @@ async def run_multi_symbol_backtest():
         "EUR_USD",
         # "GBP_USD", 
         # "USD_JPY",
-        # "US30"
+        # "US30"  # Note: Check if this symbol is available in your Oanda account
     ]
     
     results = {}
@@ -450,7 +478,7 @@ async def run_multi_symbol_backtest():
 async def run_different_timeframes():
     """Test the same symbol across different timeframes"""
     
-    logger.info("⏰ MULTI-TIMEFRAME REAL DATA BACKTEST")
+    logger.info("⏰ MULTI-TIMEFRAME REAL DATA BACKTEST (Oanda Direct API)")
     logger.info("=" * 50)
     
     timeframes = [
@@ -490,57 +518,27 @@ async def run_different_timeframes():
     return results
 
 async def main():
-    """Main test runner with real historical data focus"""
+    """Run enhanced testing suite with Oanda Direct API"""
     
-    logger.info("📊 REAL HISTORICAL DATA BACKTESTING SUITE")
-    logger.info("=" * 60)
+    logger.info("🚀 Starting enhanced testing with Oanda Direct API...")
     
-    # Test 1: Single symbol real data backtest
-    logger.info("\n1️⃣ SINGLE SYMBOL REAL DATA BACKTEST...")
-    single_result = await run_real_data_backtest(
-        symbol="EUR_USD",
-        timeframe="M15", 
-        bars=150,
-        initial_balance=100000
+    result = await run_enhanced_agent_testing(
+        symbol="US30_USD",
+        timeframe="M5",
+        bars=500,
+        initial_balance=10000
     )
     
-    if not single_result.get('success'):
-        logger.error("❌ Single symbol test failed. Check Oanda connection.")
-        return
-    
-    logger.info("\n" + "=" * 60)
-    
-    # Test 2: Multi-symbol backtest
-    #logger.info("\n2️⃣ MULTI-SYMBOL REAL DATA BACKTEST...")
-    #multi_result = await run_multi_symbol_backtest()
-    
-    logger.info("\n" + "=" * 60)
-    
-    # Test 3: Multi-timeframe backtest
-    #logger.info("\n3️⃣ MULTI-TIMEFRAME REAL DATA BACKTEST...")
-    #timeframe_result = await run_different_timeframes()
-    
-    logger.info("\n" + "=" * 60)
-    
-    # Final summary
-    logger.info("🎉 REAL DATA BACKTESTING COMPLETE!")
-    
-    logger.info("\n✅ ACHIEVEMENTS:")
-    logger.info("   📊 Real historical data from Oanda MCP server")
-    logger.info("   🤖 AI agents analyzed actual market movements")
-    logger.info("   📝 Professional markdown reports generated")
-    logger.info("   🎯 Wyckoff methodology applied to real patterns")
-    
-    logger.info("\n📁 CHECK YOUR REPORTS:")
-    logger.info("   All analysis reports saved in 'reports/' directory")
-    logger.info("   Each report contains complete agent reasoning")
-    
-    logger.info("\n🚀 NEXT STEPS:")
-    logger.info("   1. Review generated reports for agent insights")
-    logger.info("   2. Compare performance across symbols/timeframes")
-    logger.info("   3. Analyze Wyckoff pattern identification accuracy")
-    logger.info("   4. Fine-tune agent parameters based on results")
-    logger.info("   5. Scale up to longer time periods")
+    if result is not None and result['success']:
+        print("✅ Enhanced testing completed!")
+        print(f"📊 Agent Test Report: {result['agent_tests']['report_path']}")
+        print(f"📈 Backtest Report: {result['backtest_results']['report_path']}")
+        print(f"📊 Performance Charts: {result['charts']}")
+    else:
+        if result:
+            print(f"❌ Testing failed: {result.get('error', 'Unknown error')}")
+        else:
+            print("❌ Testing failed: No result returned.")
 
 if __name__ == "__main__":
     asyncio.run(main())
