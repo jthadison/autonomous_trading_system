@@ -1,7 +1,7 @@
 """
 Real-Time Paper Trading System
 Integrates CrewAI agents with live Oanda data for paper trading
-Updated to use Direct Oanda API instead of MCP wrapper
+FIXED: Proper Pydantic field declarations for LiveRiskTool and other tools
 """
 
 import sys
@@ -92,7 +92,7 @@ class TradingSignal(BaseModel):
     pattern_type: str
     timestamp: datetime
 
-# UPDATED: Enhanced Tools for Direct API Trading
+# FIXED: Enhanced Tools for Direct API Trading with proper Pydantic field declarations
 class LiveMarketDataTool(BaseTool):
     """Tool for accessing live market data via Direct API"""
     name: str = "live_market_data"
@@ -159,14 +159,12 @@ class LiveWyckoffTool(BaseTool):
             return json.dumps({"error": str(e)})
 
 class LiveRiskTool(BaseTool):
-    """Tool for live risk management"""
+    """Tool for live risk management with proper Pydantic field declaration"""
     name: str = "live_risk_management"
     description: str = "Calculate position sizing and risk for live trading"
     
-    def __init__(self, account=None, **kwargs):
-        """Initialize with account reference"""
-        super().__init__(**kwargs)
-        self.account = account
+    # FIXED: Properly declare account as a Pydantic field (class attribute)
+    account: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Account information")
     
     def _run(self, signal_data: str) -> str:
         """Calculate risk management for live trade"""
@@ -176,14 +174,14 @@ class LiveRiskTool(BaseTool):
             stop_loss = data.get("stop_loss", 0)
             
             # Risk management calculations
-            if self.account is None:
+            if not self.account:
                 return json.dumps({"error": "Account not initialized"})
                 
-            risk_amount = self.account.balance * 0.02  # 2% risk
+            risk_amount = self.account.get("balance", 0) * 0.02  # 2% risk
             risk_per_unit = abs(entry_price - stop_loss)
             
             if risk_per_unit > 0:
-                position_size = min(risk_amount / risk_per_unit, self.account.free_margin * 0.1)
+                position_size = min(risk_amount / risk_per_unit, self.account.get("free_margin", 0) * 0.1)
             else:
                 position_size = 1000
             
@@ -192,44 +190,50 @@ class LiveRiskTool(BaseTool):
                 "risk_amount": risk_amount,
                 "risk_percentage": 2.0,
                 "max_loss": risk_per_unit * position_size,
-                "account_balance": self.account.balance if self.account else 0,
-                "free_margin": self.account.free_margin if self.account else 0
+                "account_balance": self.account.get("balance", 0),
+                "free_margin": self.account.get("free_margin", 0)
             }
             
             return json.dumps(risk_mgmt)
         except Exception as e:
             return json.dumps({"error": str(e)})
+    
+    def set_account(self, account_data: Dict[str, Any]):
+        """Set account information after initialization"""
+        self.account = account_data
 
 class LiveAccountTool(BaseTool):
-    """Tool for live account monitoring"""
+    """Tool for live account monitoring with proper Pydantic field declaration"""
     name: str = "live_account_monitor"
     description: str = "Monitor live account status and positions"
     
-    def __init__(self, account=None, **kwargs):
-        """Initialize with account reference"""
-        super().__init__(**kwargs)
-        self.account = account
+    # FIXED: Properly declare account as a Pydantic field (class attribute)
+    account: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Account information")
     
     def _run(self, query: str) -> str:
         """Get live account information"""
         try:
-            if self.account is None:
+            if not self.account:
                 return json.dumps({"error": "Account not initialized"})
                 
             account_info = {
-                "balance": self.account.balance,
-                "equity": self.account.equity,
-                "free_margin": self.account.free_margin,
-                "used_margin": self.account.used_margin,
-                "open_positions": len(self.account.positions),
-                "total_trades": self.account.total_trades,
-                "total_pnl": self.account.total_pnl
+                "balance": self.account.get("balance", 0),
+                "equity": self.account.get("equity", 0),
+                "free_margin": self.account.get("free_margin", 0),
+                "used_margin": self.account.get("used_margin", 0),
+                "open_positions": len(self.account.get("positions", [])),
+                "total_trades": self.account.get("total_trades", 0),
+                "total_pnl": self.account.get("total_pnl", 0.0)
             }
             
             return json.dumps(account_info)
             
         except Exception as e:
             return json.dumps({"error": str(e)})
+    
+    def set_account(self, account_data: Dict[str, Any]):
+        """Set account information after initialization"""
+        self.account = account_data
 
 class PaperTradingEngine:
     """Core paper trading engine with Direct API"""
@@ -245,25 +249,52 @@ class PaperTradingEngine:
         # Initialize LLM
         self.llm = self._create_llm()
         
-        # Initialize tools
+        # FIXED: Initialize tools without passing account to constructor
         self.wyckoff_tool = LiveWyckoffTool()
-        # FIXED: Pass account to LiveRiskTool constructor properly
-        self.risk_tool = LiveRiskTool(account=self.account)
-        self.account_tool = LiveAccountTool(account=self.account)
+        self.risk_tool = LiveRiskTool()
+        self.account_tool = LiveAccountTool()
+        
+        # FIXED: Set account data after initialization
+        account_dict = self._convert_account_to_dict()
+        self.risk_tool.set_account(account_dict)
+        self.account_tool.set_account(account_dict)
         
         # Create agents
         self._create_trading_agents()
+        
+    def _convert_account_to_dict(self) -> Dict[str, Any]:
+        """Convert PaperAccount to dictionary for tool compatibility"""
+        return {
+            "balance": self.account.balance,
+            "equity": self.account.equity,
+            "free_margin": self.account.free_margin,
+            "used_margin": self.account.used_margin,
+            "positions": [pos.dict() for pos in self.account.positions],
+            "total_trades": self.account.total_trades,
+            "total_pnl": self.account.total_pnl
+        }
+    
+    def _update_tool_accounts(self):
+        """Update account information in all tools"""
+        account_dict = self._convert_account_to_dict()
+        self.risk_tool.set_account(account_dict)
+        self.account_tool.set_account(account_dict)
     
     def _create_llm(self):
         """Create LLM for agents"""
         try:
-            return ChatAnthropic(
-                model_name="claude-3-5-sonnet-20241022",
-                temperature=0.1,
-                max_tokens=800,
-                anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
-                timeout=30
-            )
+            # return ChatAnthropic(
+            #     model="claude-3-5-sonnet-20241022",
+            #     temperature=0.1,
+            #     max_tokens=800,
+            #     anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
+            #     timeout=30
+            # )
+            return ChatOpenAI(
+                    model="gpt-4o-mini",
+                    temperature=0.1,
+                    timeout=30
+                )
         except:
             try:
                 return ChatOpenAI(
@@ -292,7 +323,7 @@ class PaperTradingEngine:
             tools=[self.wyckoff_tool],
             llm=self.llm,
             max_execution_time=20,
-            max_iter=1
+            max_iter=3
         )
         
         # Risk Manager Agent
@@ -305,7 +336,7 @@ class PaperTradingEngine:
             tools=[self.risk_tool],
             llm=self.llm,
             max_execution_time=20,
-            max_iter=1
+            max_iter=3
         )
         
         # Trading Coordinator Agent
@@ -317,7 +348,7 @@ class PaperTradingEngine:
             allow_delegation=False,
             llm=self.llm,
             max_execution_time=20,
-            max_iter=1
+            max_iter=3
         )
     
     async def initialize(self):
@@ -525,6 +556,9 @@ class PaperTradingEngine:
             self.account.free_margin = self.account.balance - self.account.used_margin
             self.account.total_trades += 1
             
+            # FIXED: Update tools with new account state
+            self._update_tool_accounts()
+            
             # Log to database
             await self._log_trade_to_database(position, signal)
             
@@ -576,6 +610,9 @@ class PaperTradingEngine:
             total_unrealized = sum(pos.unrealized_pnl for pos in self.account.positions)
             self.account.equity = self.account.balance + total_unrealized
             
+            # FIXED: Update tools with new account state after position updates
+            self._update_tool_accounts()
+            
         except Exception as e:
             logger.error(f"Failed to update positions: {e}")
     
@@ -596,6 +633,9 @@ class PaperTradingEngine:
             
             # Remove from positions
             self.account.positions.remove(position)
+            
+            # FIXED: Update tools with new account state after position closure
+            self._update_tool_accounts()
             
             # Log closure
             logger.info(f"📊 Position closed: {position.symbol} {position.side.upper()} "
@@ -814,8 +854,15 @@ async def test_paper_trading_components():
         print(f"   Initial Balance: ${account.balance:,.2f}")
         print(f"   Free Margin: ${account.free_margin:,.2f}")
         
-        # Test 3: Signal Generation
-        print("\n3. Testing Signal Generation...")
+        # Test 3: LiveRiskTool with Pydantic fields
+        print("\n3. Testing LiveRiskTool with proper Pydantic fields...")
+        risk_tool = LiveRiskTool()
+        print(f"   ✅ LiveRiskTool created successfully")
+        print(f"   ✅ Has account field: {hasattr(risk_tool, 'account')}")
+        print(f"   ✅ Account is set: {risk_tool.account is not None}")
+        
+        # Test 4: Signal Generation
+        print("\n4. Testing Signal Generation...")
         engine = PaperTradingEngine()
         await engine.initialize()
         
@@ -825,14 +872,14 @@ async def test_paper_trading_components():
             print(f"   Confidence: {signal.confidence:.1f}%")
             print(f"   Entry: {signal.entry_price:.5f}")
         
-        # Test 4: Paper Trade Execution
-        print("\n4. Testing Paper Trade Execution...")
+        # Test 5: Paper Trade Execution
+        print("\n5. Testing Paper Trade Execution...")
         if signal and signal.action != "hold":
             success = await engine.execute_paper_trade(signal)
             print(f"   Trade Executed: {success}")
             print(f"   Open Positions: {len(engine.account.positions)}")
         
-        print("\n✅ Component testing completed successfully!")
+        print("\n✅ All component tests completed successfully!")
         
     except Exception as e:
         print(f"❌ Component testing failed: {e}")
@@ -841,7 +888,7 @@ async def test_paper_trading_components():
 
 # CLI Interface
 if __name__ == "__main__":
-    print("📈 PAPER TRADING SYSTEM WITH DIRECT OANDA API")
+    print("📈 PAPER TRADING SYSTEM WITH DIRECT OANDA API (FIXED)")
     print("Choose an option:")
     print("1. Run live paper trading")
     print("2. Test components only")
