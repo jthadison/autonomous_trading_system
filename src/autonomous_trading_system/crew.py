@@ -11,6 +11,7 @@ import time
 from typing import Dict, List, Any
 
 from crewai.utilities.events.third_party.agentops_listener import agentops
+from mcp_servers.oanda_direct_api import OandaDirectAPI
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent / "src"))
@@ -23,7 +24,7 @@ from typing import List
 from crewai import Agent, Task, Crew, Process
 from crewai.tools import tool
 from src.config.logging_config import logger
-from src.mcp_servers.oanda_mcp_wrapper import OandaMCPWrapper
+#from src.mcp_servers.oanda_mcp_wrapper import OandaMCPWrapper
 from src.database.manager import db_manager
 from src.database.models import AgentAction, LogLevel
 from crewai_tools import MCPServerAdapter
@@ -52,9 +53,10 @@ warnings.filterwarnings("ignore", category=PydanticDeprecatedSince20)
 # Existing analysis and data tools
 @tool
 def get_live_price(instrument: str) -> Dict[str, Any]:
-    """Get live price for a forex instrument"""
+    """Get live price for a forex instrument using Direct API"""
     async def _get_price():
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
+        # UPDATED: Use Direct API instead of MCP wrapper
+        async with OandaDirectAPI() as oanda:
             return await oanda.get_current_price(instrument)
     
     try:
@@ -67,14 +69,15 @@ def get_live_price(instrument: str) -> Dict[str, Any]:
         else:
             return asyncio.run(_get_price())
     except Exception as e:
-        logger.error(f"Failed to get live price for {instrument}", error=str(e))
+        logger.error(f"Failed to get live price for {instrument}: {str(e)}")
         return {"error": str(e)}
-    
+
 @tool  
 def get_historical_data(instrument: str, timeframe: str = "M15", count: int = 200) -> Dict[str, Any]:
-    """Get historical price data for Wyckoff analysis"""
+    """Get historical price data using Direct API"""
     async def _get_historical():
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
+        # UPDATED: Use Direct API instead of MCP wrapper
+        async with OandaDirectAPI() as oanda:
             return await oanda.get_historical_data(instrument, timeframe, count)
     
     try:
@@ -87,33 +90,15 @@ def get_historical_data(instrument: str, timeframe: str = "M15", count: int = 20
         else:
             return asyncio.run(_get_historical())
     except Exception as e:
-        logger.error(f"Failed to get historical data for {instrument}", error=str(e))
-        return {"error": str(e)}
-
-@tool
-async def analyze_wyckoff_patterns(instrument: str, timeframe: str = "M15") -> Dict[str, Any]:
-    """Perform comprehensive Wyckoff pattern analysis"""
-    try:
-        # Get historical data for analysis
-        historical_data = get_historical_data(instrument, timeframe, 200)
-        
-        if "error" in historical_data:
-            return {"error": f"Failed to get data: {historical_data['error']}"}
-        
-        # Run Wyckoff analysis
-        analysis_result = await wyckoff_analyzer.analyze_market_data(historical_data['data'], timeframe)
-        
-        return analysis_result
-        
-    except Exception as e:
-        logger.error(f"Wyckoff analysis failed for {instrument}", error=str(e))
+        logger.error(f"Failed to get historical data for {instrument}: {str(e)}")
         return {"error": str(e)}
 
 @tool
 def get_account_info() -> Dict[str, Any]:
-    """Get current account information"""
+    """Get current account information using Direct API"""
     async def _get_account():
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
+        # UPDATED: Use Direct API instead of MCP wrapper
+        async with OandaDirectAPI() as oanda:
             return await oanda.get_account_info()
     
     try:

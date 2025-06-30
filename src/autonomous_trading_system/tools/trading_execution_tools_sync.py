@@ -1,6 +1,6 @@
 """
 Enhanced Trading Execution Tools for CrewAI Autonomous Trading System
-Combines comprehensive business logic with sync/async compatibility fixes
+Updated for OandaDirectAPI (replacing MCP wrapper)
 """
 
 import asyncio
@@ -21,7 +21,8 @@ if str(project_root) not in sys.path:
 
 from crewai.tools import tool
 from src.config.logging_config import logger
-from src.mcp_servers.oanda_mcp_wrapper import OandaMCPWrapper
+# UPDATED: Import OandaDirectAPI instead of OandaMCPWrapper
+from src.mcp_servers.oanda_direct_api import OandaDirectAPI
 from src.database.manager import db_manager
 from src.database.models import EventLog, Trade, TradeStatus, TradeSide, Order, OrderType, OrderStatus, AgentAction, LogLevel
 
@@ -75,6 +76,618 @@ def _generate_trade_reference() -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     unique_id = str(uuid.uuid4())[:8]
     return f"TRADE_{timestamp}_{unique_id}"
+
+
+# ================================
+# ASYNC CORE IMPLEMENTATIONS
+# ================================
+
+async def execute_market_trade_async(
+    instrument: str,
+    side: str,  # "buy" or "sell"
+    units: float,
+    stop_loss: Optional[float] = None,
+    take_profit: Optional[float] = None,
+    reason: str = "Wyckoff signal",
+    max_slippage: float = 0.001  # 0.1% max slippage
+) -> Dict[str, Any]:
+    """Execute market order with comprehensive risk management and logging"""
+    
+    try:
+        # Generate unique trade reference for tracking
+        trade_reference = _generate_trade_reference()
+        
+        # UPDATED: Use OandaDirectAPI instead of OandaMCPWrapper
+        async with OandaDirectAPI() as oanda:
+            account_info = await oanda.get_account_info()
+            
+            if not account_info.get("success"):
+                raise TradeExecutionError(f"Failed to get account info: {account_info.get('error')}")
+            
+            account_balance = float(account_info.get("balance", 0))
+            
+            # Validate trade parameters
+            validation = await _validate_trade_parameters(
+                instrument, side, units, account_balance
+            )
+            
+            # Get current price for slippage validation
+            current_price_data = await oanda.get_current_price(instrument)
+            if not current_price_data.get("success"):
+                raise TradeExecutionError(f"Failed to get current price: {current_price_data.get('error')}")
+            
+            current_price = float(current_price_data.get("bid" if side == "sell" else "ask", 0))
+            
+            # Convert side to units (positive for buy, negative for sell)
+            signed_units = abs(units) if side.lower() == "buy" else -abs(units)
+            
+            logger.info(
+                "Executing market order",
+                instrument=instrument,
+                side=side,
+                units=signed_units,
+                current_price=current_price
+            )
+            
+            # UPDATED: Use create_market_order instead of place_market_order
+            order_result = await oanda.create_market_order(
+                instrument=instrument,
+                units=signed_units,
+                stop_loss=stop_loss,
+                take_profit=take_profit
+            )
+            
+            if not order_result.get("success"):
+                raise TradeExecutionError(f"Order execution failed: {order_result.get('error')}")
+            
+            # Extract execution details
+            execution_price = float(order_result.get("price", current_price))
+            order_id = order_result.get("order_id", "unknown")
+            
+            # Validate slippage
+            if side.lower() == "buy":
+                slippage = (execution_price - current_price) / current_price
+            else:
+                slippage = (current_price - execution_price) / current_price
+            
+            if abs(slippage) > max_slippage:
+                logger.warning(
+                    "High slippage detected",
+                    expected_price=current_price,
+                    execution_price=execution_price,
+                    slippage_pct=slippage * 100
+                )
+            
+            # Log trade to database (non-critical - trade succeeds even if logging fails)
+            trade_logged = await _log_trade_to_database(
+                instrument=instrument,
+                side=side,
+                units=abs(units),
+                entry_price=execution_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                order_id=order_id,
+                agent_decision={
+                    "trade_reference": trade_reference,
+                    "reason": reason,
+                    "validation": validation,
+                    "slippage": slippage
+                }
+            )
+            
+            result = {
+                "success": True,
+                "trade_reference": trade_reference,
+                "trade_logged": trade_logged,
+                "order_id": order_id,
+                "transaction_id": order_result.get("transaction_id"),
+                "instrument": instrument,
+                "side": side,
+                "units": abs(units),
+                "execution_price": execution_price,
+                "expected_price": current_price,
+                "slippage": slippage,
+                "slippage_pct": round(slippage * 100, 4),
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "account_balance": account_balance,
+                "position_value": validation["position_value"],
+                "risk_ratio": validation["risk_ratio"],
+                "execution_time": datetime.now(timezone.utc).isoformat(),
+                "reason": reason,
+                "pl": order_result.get("pl", 0),
+                "commission": order_result.get("commission", 0),
+                "financing": order_result.get("financing", 0)
+            }
+            
+            logger.info("Market order executed successfully", trade_reference=trade_reference)
+            return result
+            
+    except Exception as e:
+        trade_reference = _generate_trade_reference()
+        error_result = {
+            "success": False,
+            "trade_reference": trade_reference,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "instrument": instrument,
+            "side": side,
+            "units": units,
+            "execution_time": datetime.now(timezone.utc).isoformat()
+        }
+        logger.error("Market order execution failed", **error_result)
+        return error_result
+
+
+async def execute_limit_trade_async(
+    instrument: str,
+    side: str,  # "buy" or "sell"
+    units: float,
+    price: float,
+    stop_loss: Optional[float] = None,
+    take_profit: Optional[float] = None,
+    expiry_time: Optional[str] = None,  # ISO format or "GTC"
+    reason: str = "Wyckoff limit order"
+) -> Dict[str, Any]:
+    """Execute limit order with risk management and expiry control"""
+    
+    try:
+        trade_reference = _generate_trade_reference()
+        
+        # UPDATED: Use OandaDirectAPI instead of OandaMCPWrapper
+        async with OandaDirectAPI() as oanda:
+            # Get account info for validation
+            account_info = await oanda.get_account_info()
+            if not account_info.get("success"):
+                raise TradeExecutionError(f"Failed to get account info: {account_info.get('error')}")
+            
+            account_balance = float(account_info.get("balance", 0))
+            
+            # Validate trade parameters
+            validation = await _validate_trade_parameters(
+                instrument, side, units, account_balance
+            )
+            
+            # Validate limit price against current market
+            current_price_data = await oanda.get_current_price(instrument)
+            if not current_price_data.get("success"):
+                raise TradeExecutionError(f"Failed to get current price: {current_price_data.get('error')}")
+            
+            current_price = float(current_price_data.get("bid" if side == "sell" else "ask", 0))
+            
+            # Validate limit price logic
+            if side.lower() == "buy" and price >= current_price:
+                logger.warning(
+                    "Buy limit price above market - will execute immediately",
+                    limit_price=price,
+                    current_price=current_price
+                )
+            elif side.lower() == "sell" and price <= current_price:
+                logger.warning(
+                    "Sell limit price below market - will execute immediately",
+                    limit_price=price,
+                    current_price=current_price
+                )
+            
+            # Convert side to units (positive for buy, negative for sell)
+            signed_units = abs(units) if side.lower() == "buy" else -abs(units)
+            
+            logger.info(
+                "Placing limit order",
+                instrument=instrument,
+                side=side,
+                units=signed_units,
+                price=price,
+                current_price=current_price
+            )
+            
+            # UPDATED: Use create_limit_order instead of place_limit_order
+            order_result = await oanda.create_limit_order(
+                instrument=instrument,
+                units=signed_units,
+                price=price,
+                stop_loss=stop_loss,
+                take_profit=take_profit
+            )
+            
+            if not order_result.get("success"):
+                raise TradeExecutionError(f"Limit order failed: {order_result.get('error')}")
+            
+            order_id = order_result.get("order_id", "unknown")
+            
+            result = {
+                "success": True,
+                "trade_reference": trade_reference,
+                "order_id": order_id,
+                "transaction_id": order_result.get("transaction_id"),
+                "order_type": "limit",
+                "status": "pending",
+                "instrument": instrument,
+                "side": side,
+                "units": abs(units),
+                "limit_price": price,
+                "current_price": current_price,
+                "price_distance": abs(price - current_price),
+                "price_distance_pct": round(abs(price - current_price) / current_price * 100, 4),
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "expiry_time": expiry_time or "GTC",
+                "account_balance": account_balance,
+                "position_value": validation["position_value"],
+                "risk_ratio": validation["risk_ratio"],
+                "placement_time": datetime.now(timezone.utc).isoformat(),
+                "reason": reason
+            }
+            
+            logger.info("Limit order placed successfully", **result)
+            return result
+            
+    except Exception as e:
+        trade_reference = _generate_trade_reference()
+        error_result = {
+            "success": False,
+            "trade_reference": trade_reference,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "order_type": "limit",
+            "instrument": instrument,
+            "side": side,
+            "units": units,
+            "price": price,
+            "placement_time": datetime.now(timezone.utc).isoformat()
+        }
+        logger.error("Limit order placement failed", **error_result)
+        return error_result
+
+
+async def get_portfolio_status_async() -> Dict[str, Any]:
+    """Get comprehensive portfolio status"""
+    
+    try:
+        portfolio_summary = {
+            "success": True,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "LIVE"
+        }
+        
+        async with OandaDirectAPI() as oanda:
+            # Get account information
+            account_info = await oanda.get_account_info()
+            
+            if account_info.get("success"):
+                balance = float(account_info.get("balance", 0))
+                margin_used = float(account_info.get("margin_used", 0))
+                margin_available = float(account_info.get("margin_available", 0))
+                nav = float(account_info.get("nav", 0))
+                unrealized_pl = float(account_info.get("unrealized_pl", 0))
+                
+                portfolio_summary.update({
+                    "account_balance": balance,
+                    "nav": nav,
+                    "margin_used": margin_used,
+                    "margin_available": margin_available,
+                    "unrealized_pl": unrealized_pl,
+                    "open_trades": account_info.get("open_trade_count", 0),
+                    "open_positions": account_info.get("open_position_count", 0),
+                    "pending_orders": account_info.get("pending_order_count", 0)
+                })
+            
+            # Get detailed position information
+            positions_data = await oanda.get_positions()
+            if positions_data.get("success"):
+                portfolio_summary.update({
+                    "positions": positions_data.get("positions", []),
+                    "total_positions": positions_data.get("position_count", 0)
+                })
+            
+            # Get pending orders
+            orders_data = await oanda.get_orders()
+            if orders_data.get("success"):
+                portfolio_summary.update({
+                    "pending_orders_detail": orders_data.get("orders", []),
+                    "total_pending_orders": orders_data.get("order_count", 0)
+                })
+            
+            # Calculate exposure
+            total_exposure = 0.0
+            for position in portfolio_summary.get("positions", []):
+                # Add long and short exposure
+                long_units = abs(float(position.get("long", {}).get("units", 0)))
+                short_units = abs(float(position.get("short", {}).get("units", 0)))
+                total_exposure += long_units + short_units
+            
+            portfolio_summary.update({
+                "total_exposure": total_exposure,
+                "exposure_pct": round((total_exposure / balance * 100), 2) if balance > 0 else 0
+            })
+            
+            logger.info(
+                "Portfolio status retrieved",
+                balance=balance,
+                unrealized_pl=unrealized_pl,
+                total_positions=portfolio_summary.get("total_positions"),
+                total_exposure=total_exposure
+            )
+            
+            return portfolio_summary
+            
+    except Exception as e:
+        error_result = {
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        logger.error("Failed to get portfolio status", **error_result)
+        return error_result
+
+
+async def get_open_positions_async() -> Dict[str, Any]:
+    """Get all open positions with current P&L"""
+    
+    try:
+        async with OandaDirectAPI() as oanda:
+            # Get positions data
+            positions_data = await oanda.get_positions()
+            
+            if not positions_data.get("success"):
+                raise Exception(f"Failed to get positions: {positions_data.get('error')}")
+            
+            # Process positions data
+            positions = positions_data.get("positions", [])
+            
+            # Calculate portfolio metrics
+            total_unrealized_pnl = 0.0
+            total_exposure = 0.0
+            position_details = []
+            
+            for position in positions:
+                long_info = position.get("long", {})
+                short_info = position.get("short", {})
+                
+                long_units = float(long_info.get("units", 0))
+                short_units = float(short_info.get("units", 0))
+                
+                net_units = long_units + short_units  # short_units is negative
+                unrealized_pnl = float(position.get("unrealized_pl", 0))
+                
+                # Calculate exposure (absolute value of all units)
+                exposure = abs(long_units) + abs(short_units)
+                
+                total_unrealized_pnl += unrealized_pnl
+                total_exposure += exposure
+                
+                # Add processed position details
+                position_details.append({
+                    "instrument": position.get("instrument"),
+                    "net_units": net_units,
+                    "side": "LONG" if net_units > 0 else "SHORT" if net_units < 0 else "FLAT",
+                    "unrealized_pl": unrealized_pnl,
+                    "total_pl": float(position.get("pl", 0)),
+                    "exposure": exposure,
+                    "margin_used": float(position.get("margin_used", 0)),
+                    "commission": float(position.get("commission", 0)),
+                    "long": {
+                        "units": long_units,
+                        "avg_price": long_info.get("avg_price"),
+                        "pl": float(long_info.get("pl", 0)),
+                        "unrealized_pl": float(long_info.get("unrealized_pl", 0))
+                    },
+                    "short": {
+                        "units": short_units,
+                        "avg_price": short_info.get("avg_price"),
+                        "pl": float(short_info.get("pl", 0)),
+                        "unrealized_pl": float(short_info.get("unrealized_pl", 0))
+                    }
+                })
+            
+            result = {
+                "success": True,
+                "positions": position_details,
+                "position_count": len(position_details),
+                "total_unrealized_pnl": round(total_unrealized_pnl, 2),
+                "total_exposure": round(total_exposure, 2),
+                "query_time": datetime.now(timezone.utc).isoformat()
+            }
+            
+            logger.info(
+                "Positions retrieved successfully",
+                position_count=len(position_details),
+                total_pnl=total_unrealized_pnl,
+                total_exposure=total_exposure
+            )
+            
+            return result
+            
+    except Exception as e:
+        error_result = {
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "query_time": datetime.now(timezone.utc).isoformat()
+        }
+        logger.error("Failed to get positions", **error_result)
+        return error_result
+
+
+async def get_pending_orders_async() -> Dict[str, Any]:
+    """Get all pending orders"""
+    
+    try:
+        async with OandaDirectAPI() as oanda:
+            # Get orders data
+            orders_data = await oanda.get_orders()
+            
+            if not orders_data.get("success"):
+                raise Exception(f"Failed to get orders: {orders_data.get('error')}")
+            
+            # Process orders data
+            orders = orders_data.get("orders", [])
+            
+            processed_orders = []
+            for order in orders:
+                processed_order = {
+                    "id": order.get("id"),
+                    "type": order.get("type"),
+                    "instrument": order.get("instrument"),
+                    "units": float(order.get("units", 0)),
+                    "price": order.get("price"),
+                    "stop_loss_price": order.get("stop_loss_price"),
+                    "take_profit_price": order.get("take_profit_price"),
+                    "time_in_force": order.get("time_in_force"),
+                    "created_time": order.get("created_time"),
+                    "state": order.get("state"),
+                    "side": "BUY" if float(order.get("units", 0)) > 0 else "SELL"
+                }
+                processed_orders.append(processed_order)
+            
+            result = {
+                "success": True,
+                "orders": processed_orders,
+                "order_count": len(processed_orders),
+                "query_time": datetime.now(timezone.utc).isoformat()
+            }
+            
+            logger.info(
+                "Orders retrieved successfully",
+                order_count=len(processed_orders)
+            )
+            
+            return result
+            
+    except Exception as e:
+        error_result = {
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "query_time": datetime.now(timezone.utc).isoformat()
+        }
+        logger.error("Failed to get orders", **error_result)
+        return error_result
+
+
+async def close_position_async(
+    instrument: str,
+    units: Optional[float] = None,
+    reason: str = "Manual close"
+) -> Dict[str, Any]:
+    """Close an existing position (full or partial)"""
+    
+    try:
+        close_reference = f"CLOSE_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
+        
+        async with OandaDirectAPI() as oanda:
+            logger.info(
+                "Closing position",
+                instrument=instrument,
+                units=units,
+                reason=reason
+            )
+            
+            # Close position using Oanda Direct API
+            close_result = await oanda.close_position(
+                instrument=instrument,
+                units=str(units) if units else None
+            )
+            
+            if not close_result.get("success"):
+                raise Exception(f"Position close failed: {close_result.get('error')}")
+            
+            result = {
+                "success": True,
+                "close_reference": close_reference,
+                "instrument": instrument,
+                "units_closed": units,
+                "long_close": close_result.get("long_close"),
+                "short_close": close_result.get("short_close"),
+                "total_pl": 0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "reason": reason
+            }
+            
+            # Calculate total P&L
+            if close_result.get("long_close"):
+                result["total_pl"] += close_result["long_close"].get("pl", 0)
+            if close_result.get("short_close"):
+                result["total_pl"] += close_result["short_close"].get("pl", 0)
+            
+            logger.info(
+                "Position closed successfully",
+                instrument=instrument,
+                close_reference=close_reference,
+                total_pl=result["total_pl"]
+            )
+            
+            return result
+            
+    except Exception as e:
+        close_reference = f"CLOSE_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
+        error_result = {
+            "success": False,
+            "close_reference": close_reference,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "instrument": instrument,
+            "units": units,
+            "close_time": datetime.now(timezone.utc).isoformat()
+        }
+        logger.error("Position closure failed", **error_result)
+        return error_result
+
+
+async def cancel_pending_order_async(
+    order_id: str,
+    reason: str = "Order cancellation"
+) -> Dict[str, Any]:
+    """Cancel a pending order by ID"""
+    
+    try:
+        cancel_reference = f"CANCEL_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
+        
+        async with OandaDirectAPI() as oanda:
+            logger.info(
+                "Cancelling order",
+                order_id=order_id,
+                reason=reason
+            )
+            
+            # Cancel order using Oanda Direct API
+            cancel_result = await oanda.cancel_order(order_id)
+            
+            if not cancel_result.get("success"):
+                raise Exception(f"Order cancellation failed: {cancel_result.get('error')}")
+            
+            result = {
+                "success": True,
+                "cancel_reference": cancel_reference,
+                "order_id": order_id,
+                "transaction_id": cancel_result.get("transaction_id"),
+                "cancel_reason": cancel_result.get("reason"),
+                "cancel_time": cancel_result.get("time"),
+                "request_reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+            logger.info(
+                "Order cancelled successfully",
+                order_id=order_id,
+                cancel_reference=cancel_reference
+            )
+            
+            return result
+            
+    except Exception as e:
+        cancel_reference = f"CANCEL_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
+        error_result = {
+            "success": False,
+            "cancel_reference": cancel_reference,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "order_id": order_id,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        logger.error("Order cancellation failed", **error_result)
+        return error_result
 
 
 # ================================
@@ -164,957 +777,23 @@ async def _log_trade_to_database(
             return True
             
     except Exception as e:
-        logger.error("Failed to log trade to database", error=str(e))
-        # Return False instead of raising to avoid breaking trade execution
-        return False
-
-# ====================================
-# ADDITIONAL HELPER FUNCTIONS FOR DATABASE LOGGING
-# ====================================
-
-async def _log_position_closure_to_database(closure_details: Dict[str, Any]) -> bool:
-    """Log position closure to database"""
-    try:
-        async with db_manager.get_async_session() as session:
-            # Log as an event
-            event = EventLog(
-                level=LogLevel.INFO,
-                agent_name="TradingExecutionEngine",
-                event_type="POSITION_CLOSED",
-                message=f"Position closed: {closure_details['instrument']} - {closure_details['close_type']}",
-                context={
-                    "close_reference": closure_details["close_reference"],
-                    "instrument": closure_details["instrument"],
-                    "units_closed": closure_details["units_closed"],
-                    "realized_pnl": closure_details["realized_pnl"],
-                    "closure_price": closure_details["closure_price"],
-                    "reason": closure_details["reason"]
-                }
-            )
-            
-            session.add(event)
-            await session.commit()
-            
-            logger.debug("Position closure logged to database successfully")
-            return True
-            
-    except Exception as e:
-        logger.error("Failed to log position closure to database", error=str(e))
+        logger.error(
+            "Failed to log trade to database",
+            error=str(e),
+            instrument=instrument,
+            side=side,
+            units=units
+        )
         return False
 
 
-async def _log_order_cancellation_to_database(cancellation_details: Dict[str, Any]) -> bool:
-    """Log order cancellation to database"""
-    try:
-        async with db_manager.get_async_session() as session:
-            # Log as an event
-            event = EventLog(
-                level=LogLevel.INFO,
-                agent_name="TradingExecutionEngine",
-                event_type="ORDER_CANCELLED",
-                message=f"Order cancelled: {cancellation_details['order_id']}",
-                context={
-                    "cancel_reference": cancellation_details["cancel_reference"],
-                    "order_id": cancellation_details["order_id"],
-                    "cancelled_order": cancellation_details["cancelled_order"],
-                    "reason": cancellation_details["reason"]
-                }
-            )
-            
-            session.add(event)
-            await session.commit()
-            
-            logger.debug("Order cancellation logged to database successfully")
-            return True
-            
-    except Exception as e:
-        logger.error("Failed to log order cancellation to database", error=str(e))
-        return False
-
 # ================================
-# ASYNC CORE IMPLEMENTATIONS
+# SYNC WRAPPERS FOR CREWAI TOOLS
 # ================================
-
-async def execute_market_trade_async(
-    instrument: str,
-    side: str,  # "buy" or "sell"
-    units: float,
-    stop_loss: Optional[float] = None,
-    take_profit: Optional[float] = None,
-    reason: str = "Wyckoff signal",
-    max_slippage: float = 0.001  # 0.1% max slippage
-) -> Dict[str, Any]:
-    """Execute market order with comprehensive risk management and logging"""
-    
-    try:
-        # Generate unique trade reference for tracking
-        trade_reference = _generate_trade_reference()
-        
-        # Get account info for risk validation
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            account_info = await oanda.get_account_info()
-            
-            if "error" in str(account_info):
-                raise TradeExecutionError(f"Failed to get account info: {account_info}")
-            
-            account_balance = float(account_info.get("balance", 0))
-            
-            # Validate trade parameters
-            validation = await _validate_trade_parameters(
-                instrument, side, units, account_balance
-            )
-            
-            # Get current price for slippage validation
-            current_price_data = await oanda.get_current_price(instrument)
-            if "error" in str(current_price_data):
-                raise TradeExecutionError(f"Failed to get current price: {current_price_data}")
-            
-            current_price = float(current_price_data.get("bid" if side == "sell" else "ask", 0))
-            
-            # Execute market order (simulated for now)
-            logger.info(
-                "Executing market order",
-                instrument=instrument,
-                side=side,
-                units=units,
-                current_price=current_price
-            )
-            
-            order_result = await oanda.place_market_order(instrument, units, side)
-            
-            # TODO: Replace with actual order execution when MCP server supports it
-            # order_result = {
-            #     "success": True,
-            #     "id": f"ORDER_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",
-            #     "price": current_price,
-            #     "status": "FILLED"
-            # }
-            
-            if "error" in order_result:
-                raise TradeExecutionError(f"Order execution failed: {order_result['error']}")
-            
-            # Extract execution details
-            execution_price = float(order_result.get("price", current_price))
-            order_id = order_result.get("id", "unknown")
-            
-            # Validate slippage
-            if side.lower() == "buy":
-                slippage = (execution_price - current_price) / current_price
-            else:
-                slippage = (current_price - execution_price) / current_price
-            
-            if abs(slippage) > max_slippage:
-                logger.warning(
-                    "High slippage detected",
-                    expected_price=current_price,
-                    execution_price=execution_price,
-                    slippage_pct=slippage * 100
-                )
-            
-            # Log trade to database (non-critical - trade succeeds even if logging fails)
-            trade_logged = await _log_trade_to_database(
-                instrument=instrument,
-                side=side,
-                units=units,
-                entry_price=execution_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                order_id=order_id,
-                agent_decision={
-                    "trade_reference": trade_reference,
-                    "reason": reason,
-                    "validation": validation,
-                    "slippage": slippage
-                }
-            )
-            
-            result = {
-                "success": True,
-                "trade_reference": trade_reference,
-                "trade_logged": trade_logged,
-                "order_id": order_id,
-                "instrument": instrument,
-                "side": side,
-                "units": units,
-                "execution_price": execution_price,
-                "expected_price": current_price,
-                "slippage": slippage,
-                "slippage_pct": round(slippage * 100, 4),
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "account_balance": account_balance,
-                "position_value": validation["position_value"],
-                "risk_ratio": validation["risk_ratio"],
-                "execution_time": datetime.now(timezone.utc).isoformat(),
-                "reason": reason,
-                "status": order_result.get("status", "FILLED")  # Use actual broker status
-            }
-            
-            logger.info("Market order executed successfully", trade_reference=trade_reference)
-            return result
-            
-    except Exception as e:
-        trade_reference = _generate_trade_reference()
-        error_result = {
-            "success": False,
-            "trade_reference": trade_reference,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "instrument": instrument,
-            "side": side,
-            "units": units,
-            "execution_time": datetime.now(timezone.utc).isoformat()
-        }
-        logger.error("Market order execution failed", **error_result)
-        return error_result
-
-
-async def execute_limit_trade_async(
-    instrument: str,
-    side: str,  # "buy" or "sell"
-    units: float,
-    price: float,
-    stop_loss: Optional[float] = None,
-    take_profit: Optional[float] = None,
-    expiry_time: Optional[str] = None,  # ISO format or "GTC"
-    reason: str = "Wyckoff limit order"
-) -> Dict[str, Any]:
-    """Execute limit order with risk management and expiry control"""
-    
-    try:
-        trade_reference = _generate_trade_reference()
-        
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            # Get account info for validation
-            account_info = await oanda.get_account_info()
-            if "error" in str(account_info):
-                raise TradeExecutionError(f"Failed to get account info: {account_info}")
-            
-            account_balance = float(account_info.get("balance", 0))
-            
-            # Validate trade parameters
-            validation = await _validate_trade_parameters(
-                instrument, side, units, account_balance
-            )
-            
-            # Validate limit price against current market
-            current_price_data = await oanda.get_current_price(instrument)
-            if "error" in str(current_price_data):
-                raise TradeExecutionError(f"Failed to get current price: {current_price_data}")
-            
-            current_price = float(current_price_data.get("bid" if side == "sell" else "ask", 0))
-            
-            # Validate limit price logic
-            if side.lower() == "buy" and price >= current_price:
-                logger.warning(
-                    "Buy limit price above market - will execute immediately",
-                    limit_price=price,
-                    current_price=current_price
-                )
-            elif side.lower() == "sell" and price <= current_price:
-                logger.warning(
-                    "Sell limit price below market - will execute immediately",
-                    limit_price=price,
-                    current_price=current_price
-                )
-            
-            # Execute limit order (simulated for now)
-            logger.info(
-                "Placing limit order",
-                instrument=instrument,
-                side=side,
-                units=units,
-                price=price,
-                current_price=current_price
-            )
-            
-            # Execute actual limit order via Oanda MCP
-            logger.info(
-                "Placing limit order",
-                instrument=instrument,
-                side=side,
-                units=units,
-                price=price,
-                current_price=current_price
-            )
-            
-            order_result = await oanda.place_limit_order(instrument, units, price, side)
-            
-            if "error" in order_result:
-                raise TradeExecutionError(f"Limit order failed: {order_result['error']}")
-            
-            order_id = order_result.get("id", "unknown")
-            
-            result = {
-                "success": True,
-                "trade_reference": trade_reference,
-                "order_id": order_id,
-                "order_type": "limit",
-                "status": "pending",
-                "instrument": instrument,
-                "side": side,
-                "units": units,
-                "limit_price": price,
-                "current_price": current_price,
-                "price_distance": abs(price - current_price),
-                "price_distance_pct": round(abs(price - current_price) / current_price * 100, 4),
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "expiry_time": expiry_time or "GTC",
-                "account_balance": account_balance,
-                "position_value": validation["position_value"],
-                "risk_ratio": validation["risk_ratio"],
-                "placement_time": datetime.now(timezone.utc).isoformat(),
-                "reason": reason
-            }
-            
-            logger.info("Limit order placed successfully", **result)
-            return result
-            
-    except Exception as e:
-        trade_reference = _generate_trade_reference()
-        error_result = {
-            "success": False,
-            "trade_reference": trade_reference,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "order_type": "limit",
-            "instrument": instrument,
-            "side": side,
-            "units": units,
-            "price": price,
-            "placement_time": datetime.now(timezone.utc).isoformat()
-        }
-        logger.error("Limit order placement failed", **error_result)
-        return error_result
-
-
-async def get_portfolio_status_async() -> Dict[str, Any]:
-    """Get comprehensive portfolio status - FULLY IMPLEMENTED"""
-    
-    try:
-        portfolio_summary = {
-            "success": True,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "LIVE"  # Changed from simulation
-        }
-        
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            # Get account information
-            account_info = await oanda.get_account_info()
-            
-            if "error" not in str(account_info):
-                balance = float(account_info.get("balance", 0))
-                margin_used = float(account_info.get("margin_used", 0))
-                margin_available = float(account_info.get("margin_available", 0))
-                
-                portfolio_summary.update({
-                    "account_balance": balance,
-                    "margin_used": margin_used,
-                    "margin_available": margin_available,
-                    "margin_utilization_pct": round((margin_used / balance) * 100, 2) if balance > 0 else 0
-                })
-            else:
-                logger.error("Failed to get account info", error=str(account_info))
-                portfolio_summary["account_error"] = str(account_info)
-                # Set defaults
-                portfolio_summary.update({
-                    "account_balance": 0,
-                    "margin_used": 0,
-                    "margin_available": 0,
-                    "margin_utilization_pct": 0
-                })
-            
-            # Get actual positions
-            positions_result = await get_open_positions_async()
-            if positions_result.get("success"):
-                positions = positions_result.get("positions", [])
-                portfolio_summary.update({
-                    "total_positions": len(positions),
-                    "position_details": positions,
-                    "total_exposure": positions_result.get("total_exposure", 0),
-                    "total_unrealized_pnl": positions_result.get("total_unrealized_pnl", 0),
-                    "exposure_pct": round((positions_result.get("total_exposure", 0) / 
-                                         portfolio_summary.get("account_balance", 1)) * 100, 2)
-                })
-            else:
-                portfolio_summary.update({
-                    "total_positions": 0,
-                    "position_details": [],
-                    "total_exposure": 0.0,
-                    "total_unrealized_pnl": 0.0,
-                    "exposure_pct": 0.0,
-                    "positions_error": positions_result.get("error")
-                })
-            
-            # Get actual pending orders
-            orders_result = await get_pending_orders_async()
-            if orders_result.get("success"):
-                orders = orders_result.get("orders", [])
-                portfolio_summary.update({
-                    "total_pending_orders": len(orders),
-                    "order_details": orders,
-                    "pending_exposure": orders_result.get("total_potential_exposure", 0)
-                })
-            else:
-                portfolio_summary.update({
-                    "total_pending_orders": 0,
-                    "order_details": [],
-                    "pending_exposure": 0.0,
-                    "orders_error": orders_result.get("error")
-                })
-            
-            # Calculate portfolio health score
-            health_score = 100
-            
-            # Deduct points for high margin usage
-            margin_pct = portfolio_summary.get("margin_utilization_pct", 0)
-            if margin_pct > 80:
-                health_score -= 30
-            elif margin_pct > 60:
-                health_score -= 20
-            elif margin_pct > 40:
-                health_score -= 10
-            
-            # Deduct points for unrealized losses
-            unrealized_pnl = portfolio_summary.get("total_unrealized_pnl", 0)
-            if unrealized_pnl < 0:
-                loss_pct = abs(unrealized_pnl) / max(portfolio_summary.get("account_balance", 1), 1) * 100
-                if loss_pct > 10:
-                    health_score -= 25
-                elif loss_pct > 5:
-                    health_score -= 15
-                elif loss_pct > 2:
-                    health_score -= 10
-            
-            portfolio_summary["portfolio_health_score"] = max(0, health_score)
-            
-            # Add risk warnings
-            risk_warnings = []
-            if margin_pct > 70:
-                risk_warnings.append("HIGH_MARGIN_USAGE")
-            if unrealized_pnl < -1000:  # More than $1000 loss
-                risk_warnings.append("SIGNIFICANT_UNREALIZED_LOSS")
-            if portfolio_summary.get("total_positions", 0) > 10:
-                risk_warnings.append("HIGH_POSITION_COUNT")
-            
-            portfolio_summary["risk_warnings"] = risk_warnings
-            
-            logger.info(
-                "Portfolio status retrieved (LIVE DATA)",
-                positions=portfolio_summary.get("total_positions", 0),
-                orders=portfolio_summary.get("total_pending_orders", 0),
-                balance=portfolio_summary.get("account_balance", 0),
-                unrealized_pnl=portfolio_summary.get("total_unrealized_pnl", 0),
-                health_score=portfolio_summary.get("portfolio_health_score", 0)
-            )
-            
-            return portfolio_summary
-            
-    except Exception as e:
-        error_result = {
-            "success": False,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        logger.error("Portfolio status retrieval failed", **error_result)
-        return error_result
-
-
-async def get_open_positions_async() -> Dict[str, Any]:
-    """Get all open positions with current P&L - FULLY IMPLEMENTED"""
-    
-    try:
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            # Call actual Oanda MCP get_positions method
-            positions_data = await oanda.get_positions()
-            
-            if "error" in str(positions_data):
-                return {
-                    "success": False,
-                    "error": f"Failed to retrieve positions: {positions_data}",
-                    "query_time": datetime.now(timezone.utc).isoformat()
-                }
-            
-            # Process the positions data
-            positions = positions_data.get("positions", [])
-            
-            # Calculate portfolio metrics
-            total_unrealized_pnl = 0.0
-            total_exposure = 0.0
-            position_details = []
-            
-            for position in positions:
-                unrealized_pnl = float(position.get("unrealized_pnl", 0))
-                units = float(position.get("units", 0))
-                current_price = float(position.get("current_price", 0))
-                
-                # Calculate exposure (market value of position)
-                exposure = abs(units * current_price) if current_price > 0 else abs(units)
-                
-                total_unrealized_pnl += unrealized_pnl
-                total_exposure += exposure
-                
-                # Add processed position details
-                position_details.append({
-                    "instrument": position.get("instrument"),
-                    "units": units,
-                    "side": "LONG" if units > 0 else "SHORT",
-                    "unrealized_pnl": unrealized_pnl,
-                    "current_price": current_price,
-                    "exposure": exposure,
-                    "margin_required": float(position.get("margin_required", 0)),
-                    "entry_price": float(position.get("entry_price", 0))
-                })
-            
-            result = {
-                "success": True,
-                "positions": position_details,
-                "position_count": len(positions),
-                "total_unrealized_pnl": round(total_unrealized_pnl, 2),
-                "total_exposure": round(total_exposure, 2),
-                "query_time": datetime.now(timezone.utc).isoformat(),
-                "raw_data": positions_data  # Include original data for debugging
-            }
-            
-            logger.info(
-                "Positions retrieved successfully",
-                position_count=len(positions),
-                total_pnl=total_unrealized_pnl,
-                total_exposure=total_exposure
-            )
-            
-            return result
-            
-    except Exception as e:
-        error_result = {
-            "success": False,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "query_time": datetime.now(timezone.utc).isoformat()
-        }
-        logger.error("Failed to get positions", **error_result)
-        return error_result
-
-
-async def get_pending_orders_async() -> Dict[str, Any]:
-    """Get all pending orders - FULLY IMPLEMENTED"""
-    
-    try:
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            # Call actual Oanda MCP get_orders method
-            orders_data = await oanda.get_orders()
-            
-            if "error" in str(orders_data):
-                return {
-                    "success": False,
-                    "error": f"Failed to retrieve orders: {orders_data}",
-                    "query_time": datetime.now(timezone.utc).isoformat()
-                }
-            
-            # Process the orders data
-            orders = orders_data.get("orders", [])
-            
-            # Process and categorize orders
-            order_details = []
-            total_exposure = 0.0
-            
-            order_types = {"MARKET": 0, "LIMIT": 0, "STOP": 0, "OTHER": 0}
-            
-            for order in orders:
-                order_type = order.get("type", "OTHER").upper()
-                units = float(order.get("units", 0))
-                price = float(order.get("price", 0))
-                
-                # Calculate potential exposure
-                exposure = abs(units * price) if price > 0 else abs(units)
-                total_exposure += exposure
-                
-                # Count by type
-                if order_type in order_types:
-                    order_types[order_type] += 1
-                else:
-                    order_types["OTHER"] += 1
-                
-                # Add processed order details
-                order_details.append({
-                    "id": order.get("id"),
-                    "instrument": order.get("instrument"),
-                    "type": order_type,
-                    "units": units,
-                    "side": "BUY" if units > 0 else "SELL",
-                    "price": price,
-                    "created_time": order.get("created_time"),
-                    "state": order.get("state", "PENDING"),
-                    "exposure": exposure
-                })
-            
-            result = {
-                "success": True,
-                "orders": order_details,
-                "order_count": len(orders),
-                "total_potential_exposure": round(total_exposure, 2),
-                "order_breakdown": order_types,
-                "query_time": datetime.now(timezone.utc).isoformat(),
-                "raw_data": orders_data  # Include original data for debugging
-            }
-            
-            logger.info(
-                "Orders retrieved successfully",
-                order_count=len(orders),
-                order_types=order_types,
-                total_exposure=total_exposure
-            )
-            
-            return result
-            
-    except Exception as e:
-        error_result = {
-            "success": False,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "query_time": datetime.now(timezone.utc).isoformat()
-        }
-        logger.error("Failed to get orders", **error_result)
-        return error_result
-
-
-async def close_position_async(
-    instrument: str,
-    units: Optional[float] = None,  # None = close all
-    reason: str = "Manual close"
-) -> Dict[str, Any]:
-    """Close an existing position (full or partial) - FULLY IMPLEMENTED"""
-    
-    try:
-        close_reference = f"CLOSE_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
-        
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            # Step 1: Get current positions to validate the position exists
-            positions_data = await oanda.get_positions()
-            
-            if "error" in str(positions_data):
-                return {
-                    "success": False,
-                    "close_reference": close_reference,
-                    "error": f"Failed to retrieve positions: {positions_data}",
-                    "instrument": instrument,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            
-            # Step 2: Find the specific position for this instrument
-            positions = positions_data.get("positions", [])
-            target_position = None
-            
-            for position in positions:
-                if position.get("instrument") == instrument:
-                    target_position = position
-                    break
-            
-            if not target_position:
-                return {
-                    "success": False,
-                    "close_reference": close_reference,
-                    "error": f"No open position found for {instrument}",
-                    "instrument": instrument,
-                    "available_positions": [pos.get("instrument") for pos in positions],
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            
-            # Step 3: Validate position details
-            current_units = float(target_position.get("units", 0))
-            current_pnl = float(target_position.get("unrealized_pnl", 0))
-            
-            if current_units == 0:
-                return {
-                    "success": False,
-                    "close_reference": close_reference,
-                    "error": f"Position for {instrument} has zero units",
-                    "instrument": instrument,
-                    "position_details": target_position,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            
-            # Step 4: Determine close strategy
-            if units is None:
-                # Close entire position
-                close_type = "FULL_CLOSE"
-                units_to_close = abs(current_units)
-            else:
-                # Partial close
-                close_type = "PARTIAL_CLOSE"
-                units_to_close = min(abs(units), abs(current_units))
-            
-            # Step 5: Execute the position closure via Oanda MCP
-            logger.info(
-                "Executing position closure",
-                instrument=instrument,
-                close_type=close_type,
-                current_units=current_units,
-                units_to_close=units_to_close,
-                current_pnl=current_pnl,
-                reason=reason
-            )
-            
-            # Call the actual Oanda MCP close_position method
-            close_result = await oanda.close_position(instrument)
-            
-            if "error" in str(close_result):
-                return {
-                    "success": False,
-                    "close_reference": close_reference,
-                    "error": f"Position closure failed: {close_result}",
-                    "instrument": instrument,
-                    "units_attempted": units_to_close,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            
-            # Step 6: Process successful closure
-            closure_details = {
-                "success": True,
-                "close_reference": close_reference,
-                "instrument": instrument,
-                "close_type": close_type,
-                "units_closed": units_to_close,
-                "original_units": current_units,
-                "realized_pnl": current_pnl,  # This becomes realized upon closure
-                "closure_price": close_result.get("price", "Unknown"),
-                "broker_response": close_result,
-                "reason": reason,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "status": "EXECUTED"  # Changed from "SIMULATED"
-            }
-            
-            # Step 7: Log closure to database
-            try:
-                await _log_position_closure_to_database(closure_details)
-                closure_details["database_logged"] = True
-            except Exception as db_error:
-                logger.error("Failed to log closure to database", error=str(db_error))
-                closure_details["database_logged"] = False
-                closure_details["database_error"] = str(db_error)
-            
-            logger.info("Position closure executed successfully", **closure_details)
-            return closure_details
-            
-    except Exception as e:
-        error_result = {
-            "success": False,
-            "close_reference": f"CLOSE_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "instrument": instrument,
-            "units": units,
-            "reason": reason,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        logger.error("Position closure failed", **error_result)
-        return error_result
-
-
-async def cancel_pending_order_async(order_id: str, reason: str = "Manual cancellation") -> Dict[str, Any]:
-    """Cancel a pending order by ID - FULLY IMPLEMENTED"""
-    
-    try:
-        cancel_reference = f"CANCEL_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
-        
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            # Step 1: Verify the order exists first
-            orders_data = await oanda.get_orders()
-            
-            if "error" in str(orders_data):
-                return {
-                    "success": False,
-                    "cancel_reference": cancel_reference,
-                    "error": f"Failed to retrieve orders for verification: {orders_data}",
-                    "order_id": order_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            
-            # Find the target order
-            orders = orders_data.get("orders", [])
-            target_order = None
-            
-            for order in orders:
-                if order.get("id") == order_id:
-                    target_order = order
-                    break
-            
-            if not target_order:
-                return {
-                    "success": False,
-                    "cancel_reference": cancel_reference,
-                    "error": f"Order {order_id} not found",
-                    "order_id": order_id,
-                    "available_orders": [order.get("id") for order in orders],
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            
-            # Step 2: Attempt to cancel the order
-            logger.info(
-                "Cancelling order",
-                order_id=order_id,
-                instrument=target_order.get("instrument"),
-                order_type=target_order.get("type"),
-                reason=reason
-            )
-            
-            # Call actual Oanda MCP cancel_order method
-            cancel_result = await oanda.cancel_order(order_id)
-            
-            if "error" in str(cancel_result):
-                return {
-                    "success": False,
-                    "cancel_reference": cancel_reference,
-                    "error": f"Order cancellation failed: {cancel_result}",
-                    "order_id": order_id,
-                    "order_details": target_order,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            
-            # Step 3: Process successful cancellation
-            cancellation_details = {
-                "success": True,
-                "cancel_reference": cancel_reference,
-                "order_id": order_id,
-                "cancelled_order": target_order,
-                "broker_response": cancel_result,
-                "reason": reason,
-                "cancellation_time": datetime.now(timezone.utc).isoformat(),
-                "status": "CANCELLED"  # Changed from "SIMULATED"
-            }
-            
-            # Step 4: Log cancellation to database
-            try:
-                await _log_order_cancellation_to_database(cancellation_details)
-                cancellation_details["database_logged"] = True
-            except Exception as db_error:
-                logger.error("Failed to log cancellation to database", error=str(db_error))
-                cancellation_details["database_logged"] = False
-                cancellation_details["database_error"] = str(db_error)
-            
-            logger.info("Order cancellation executed successfully", **cancellation_details)
-            return cancellation_details
-            
-    except Exception as e:
-        error_result = {
-            "success": False,
-            "cancel_reference": f"CANCEL_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}",
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "order_id": order_id,
-            "reason": reason,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        logger.error("Order cancellation failed", **error_result)
-        return error_result
-
-
-# ================================
-# MARKET DATA AND ANALYSIS TOOLS
-# ================================
-
-async def get_live_price_async(instrument: str) -> Dict[str, Any]:
-    """Get live price for a forex instrument"""
-    async def _get_price():
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            return await oanda.get_current_price(instrument)
-    
-    try:
-        result = await _get_price()
-        logger.info(f"✅ Live price retrieved for {instrument}")
-        return result
-    except Exception as e:
-        error_msg = f"Failed to get live price for {instrument}: {str(e)}"
-        logger.error(error_msg)
-        return {"error": error_msg}
-
-
-async def get_historical_data_async(instrument: str, timeframe: str = "M15", count: int = 200) -> Dict[str, Any]:
-    """Get historical price data for Wyckoff analysis"""
-    async def _get_historical():
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            return await oanda.get_historical_data(instrument, timeframe, count)
-    
-    try:
-        result = await _get_historical()
-        logger.info(f"✅ Historical data retrieved for {instrument}")
-        return result
-    except Exception as e:
-        error_msg = f"Failed to get historical data for {instrument}: {str(e)}"
-        logger.error(error_msg)
-        return {"error": error_msg}
-
-
-async def get_account_info_async() -> Dict[str, Any]:
-    """Get current account information"""
-    async def _get_account():
-        async with OandaMCPWrapper("http://localhost:8000") as oanda:
-            return await oanda.get_account_info()
-    
-    try:
-        result = await _get_account()
-        logger.info("✅ Account info retrieved")
-        return result
-    except Exception as e:
-        error_msg = f"Failed to get account info: {str(e)}"
-        logger.error(error_msg)
-        return {"error": error_msg}
-    
-    
-     
-
-
-# ================================
-# SYNC WRAPPER TOOLS (CREWAI COMPATIBLE)
-# ================================
-
-@tool
-def get_live_price(instrument: str) -> Dict[str, Any]:
-    """Get live price for a forex instrument (SYNC VERSION FOR CREWAI)"""
-    try:
-        result = async_runner.run_async(get_live_price_async, instrument)
-        if isinstance(result, dict) and "error" not in result:
-            logger.info(f"✅ Live price retrieved for {instrument}")
-        return result
-    except Exception as e:
-        error_msg = f"Failed to get live price for {instrument}: {str(e)}"
-        logger.error(error_msg)
-        return {"error": error_msg}
-
-
-@tool  
-def get_historical_data(instrument: str, timeframe: str = "M15", count: int = 200) -> Dict[str, Any]:
-    """Get historical price data for Wyckoff analysis (SYNC VERSION FOR CREWAI)"""
-    try:
-        result = async_runner.run_async(get_historical_data_async, instrument, timeframe, count)
-        if isinstance(result, dict) and "error" not in result:
-            logger.info(f"✅ Historical data retrieved for {instrument}")
-        return result
-    except Exception as e:
-        error_msg = f"Failed to get historical data for {instrument}: {str(e)}"
-        logger.error(error_msg)
-        return {"error": error_msg}
-
-
-@tool
-def get_account_info() -> Dict[str, Any]:
-    """Get current account information (SYNC VERSION FOR CREWAI)"""
-    try:
-        result = async_runner.run_async(get_account_info_async)
-        if isinstance(result, dict) and "error" not in result:
-            logger.info("✅ Account info retrieved")
-        return result
-    except Exception as e:
-        error_msg = f"Failed to get account info: {str(e)}"
-        logger.error(error_msg)
-        return {"error": error_msg}
-
 
 @tool
 def get_portfolio_status() -> Dict[str, Any]:
-    """Get comprehensive portfolio status including positions, orders, account info, and risk metrics (SYNC VERSION FOR CREWAI)"""
+    """Get comprehensive portfolio status (SYNC VERSION FOR CREWAI)"""
     try:
         result = async_runner.run_async(get_portfolio_status_async)
         if isinstance(result, dict) and result.get("success"):
@@ -1218,7 +897,7 @@ def execute_limit_trade(
                        side=side, 
                        units=units,
                        price=price,
-                       reference=result.get("order_reference"))
+                       reference=result.get("trade_reference"))
         else:
             logger.error(f"❌ Limit order failed", result=result)
         
@@ -1296,326 +975,56 @@ def cancel_pending_order(
         }
 
 
+# Additional convenience functions for backward compatibility
+@tool
+def get_account_info() -> Dict[str, Any]:
+    """Get account information (SYNC VERSION FOR CREWAI)"""
+    try:
+        async def _get_account():
+            async with OandaDirectAPI() as oanda:
+                return await oanda.get_account_info()
+        
+        result = async_runner.run_async(_get_account)
+        if isinstance(result, dict) and result.get("success"):
+            logger.info("✅ Account info retrieved")
+        return result
+    except Exception as e:
+        error_msg = f"Account info framework error: {str(e)}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+
+
 @tool
 def calculate_position_size(
     account_balance: float,
-    risk_per_trade: float,
-    stop_distance_pips: float,
-    pip_value: float
+    risk_per_trade: float = 0.02,
+    stop_distance_pips: float = 20,
+    pip_value: float = 1.0
 ) -> Dict[str, Any]:
-    """Calculate position size based on Wyckoff levels and risk management (SYNC VERSION FOR CREWAI)"""
+    """Calculate optimal position size based on risk management rules"""
     try:
-        # Convert risk_per_trade to percentage if it's in dollar amount
-        if risk_per_trade > 1.0:
-            risk_per_trade_pct = (risk_per_trade / account_balance) * 100
-            risk_amount = risk_per_trade
-        else:
-            risk_per_trade_pct = risk_per_trade * 100
-            risk_amount = account_balance * risk_per_trade
-        
-        # Calculate position size
+        risk_amount = account_balance * risk_per_trade
         position_size = risk_amount / (stop_distance_pips * pip_value)
         
-        # Apply maximum position size limit (10% of account)
-        max_position_size = account_balance * 0.1
-        
         result = {
-            "account_balance": account_balance,
-            "risk_per_trade_pct": risk_per_trade_pct,
-            "risk_amount": risk_amount,
+            "success": True,
+            "position_size": round(position_size, 0),
+            "risk_amount": round(risk_amount, 2),
+            "risk_per_trade_pct": risk_per_trade * 100,
             "stop_distance_pips": stop_distance_pips,
-            "position_size": position_size,
             "pip_value": pip_value,
-            "max_position_size": max_position_size
+            "account_balance": account_balance,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
-        logger.info("✅ Position size calculated", 
-                   risk_pct=risk_per_trade_pct, 
-                   position_size=position_size)
+        logger.info(
+            "Position size calculated",
+            position_size=result["position_size"],
+            risk_amount=result["risk_amount"]
+        )
         
         return result
-        
     except Exception as e:
-        error_msg = f"Position size calculation failed: {str(e)}"
+        error_msg = f"Position size calculation error: {str(e)}"
         logger.error(error_msg)
-        return {"error": error_msg}
-
-
-# ================================
-# WYCKOFF ANALYSIS INTEGRATION (COMPLETELY REFACTORED)
-# ================================
-
-@tool
-def analyze_wyckoff_patterns(instrument: str, timeframe: str = "M15") -> Dict[str, Any]:
-    """Perform comprehensive Wyckoff pattern analysis (SYNC VERSION FOR CREWAI)"""
-    
-    try:
-        logger.info(f"🧠 Starting Wyckoff analysis for {instrument} on {timeframe}")
-        
-        # Step 1: Get historical data using the sync wrapper (no async calls here)
-        historical_result = get_historical_data(instrument, timeframe, 200)
-        
-        if "error" in historical_result:
-            error_msg = f"Failed to get historical data: {historical_result['error']}"
-            logger.error(error_msg)
-            return {"error": error_msg}
-        
-        # Step 2: Extract and validate price data structure
-        data_section = historical_result.get('data', {})
-        if not data_section:
-            return {"error": "No data section in historical result"}
-        
-        # Handle the nested data structure from your MCP server
-        candles = data_section.get('candles', [])
-        if not candles:
-            return {"error": "No candles data available for analysis"}
-        
-        logger.info(f"📊 Processing {len(candles)} candles for Wyckoff analysis")
-        
-        # Step 3: Validate candle data structure
-        if not isinstance(candles, list) or len(candles) < 20:
-            return {"error": f"Insufficient data for Wyckoff analysis: {len(candles)} candles (minimum 20 required)"}
-        
-        # Step 4: Prepare data for Wyckoff analyzer
-        processed_candles = []
-        for i, candle in enumerate(candles):
-            try:
-                # Extract OHLC data from candle structure
-                mid_data = candle.get('mid', {})
-                processed_candle = {
-                    'time': candle.get('time', ''),
-                    'open': float(mid_data.get('o', 0)),
-                    'high': float(mid_data.get('h', 0)),
-                    'low': float(mid_data.get('l', 0)),
-                    'close': float(mid_data.get('c', 0)),
-                    'volume': int(candle.get('volume', 0)),
-                    'complete': candle.get('complete', True)
-                }
-                processed_candles.append(processed_candle)
-            except (ValueError, KeyError) as e:
-                logger.warning(f"Skipping invalid candle at index {i}: {e}")
-                continue
-        
-        if len(processed_candles) < 20:
-            return {"error": f"Too few valid candles after processing: {len(processed_candles)}"}
-        
-        # Step 5: Import Wyckoff analyzer with error handling
-        try:
-            from src.autonomous_trading_system.utils.wyckoff_pattern_analyzer import wyckoff_analyzer
-        except ImportError as e:
-            error_msg = f"Failed to import Wyckoff analyzer: {str(e)}"
-            logger.error(error_msg)
-            # Return manual fallback analysis instead of failing completely
-            return _manual_wyckoff_analysis_fallback(processed_candles, instrument, timeframe)
-        
-        # Step 6: Define async analysis function for the thread-safe runner
-        async def _run_wyckoff_analysis():
-            try:
-                # Call the wyckoff analyzer with processed data
-                return await wyckoff_analyzer.analyze_market_data(processed_candles, timeframe)
-            except Exception as e:
-                logger.error(f"Wyckoff analyzer internal error: {str(e)}")
-                return {"error": f"Wyckoff analyzer failed: {str(e)}"}
-        
-        # Step 7: Run analysis using ThreadSafeAsyncRunner
-        logger.info(f"🔍 Running Wyckoff analysis using ThreadSafeAsyncRunner...")
-        analysis_result = async_runner.run_async(_run_wyckoff_analysis)
-        
-        # Step 8: Validate and return results
-        if not isinstance(analysis_result, dict):
-            error_msg = f"Invalid analysis result type: {type(analysis_result)}"
-            logger.error(error_msg)
-            return {"error": error_msg}
-        
-        if "error" in analysis_result:
-            logger.warning(f"Main Wyckoff analysis failed, trying manual fallback: {analysis_result.get('error')}")
-            # Try manual fallback instead of failing
-            return _manual_wyckoff_analysis_fallback(processed_candles, instrument, timeframe)
-        
-        # Step 9: Add metadata to successful results
-        analysis_result.update({
-            "instrument": instrument,
-            "timeframe": timeframe,
-            "candles_analyzed": len(processed_candles),
-            "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
-            "analysis_success": True
-        })
-        
-        logger.info(f"✅ Wyckoff analysis completed successfully for {instrument}")
-        return analysis_result
-        
-    except Exception as e:
-        error_msg = f"Critical error in Wyckoff analysis for {instrument}: {str(e)}"
-        logger.error(error_msg, exc_info=True)
-        
-        # Try manual fallback as last resort
-        try:
-            historical_result = get_historical_data(instrument, timeframe, 100)
-            if "error" not in historical_result:
-                candles = historical_result.get('data', {}).get('candles', [])
-                if candles:
-                    processed_candles = []
-                    for candle in candles:
-                        mid_data = candle.get('mid', {})
-                        processed_candles.append({
-                            'time': candle.get('time', ''),
-                            'open': float(mid_data.get('o', 0)),
-                            'high': float(mid_data.get('h', 0)),
-                            'low': float(mid_data.get('l', 0)),
-                            'close': float(mid_data.get('c', 0)),
-                            'volume': int(candle.get('volume', 0))
-                        })
-                    
-                    fallback_result = _manual_wyckoff_analysis_fallback(processed_candles, instrument, timeframe)
-                    logger.info(f"✅ Manual fallback analysis completed for {instrument}")
-                    return fallback_result
-        except Exception as fallback_error:
-            logger.error(f"Even fallback analysis failed: {str(fallback_error)}")
-        
-        return {
-            "error": error_msg,
-            "instrument": instrument,
-            "timeframe": timeframe,
-            "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
-            "analysis_success": False
-        }
-
-
-def _manual_wyckoff_analysis_fallback(candles: List[Dict], instrument: str, timeframe: str) -> Dict[str, Any]:
-    """Fallback manual Wyckoff analysis when the main analyzer fails"""
-    
-    try:
-        logger.info(f"🔄 Running fallback Wyckoff analysis for {instrument}")
-        
-        if len(candles) < 20:
-            return {"error": "Insufficient data for manual analysis"}
-        
-        # Extract price arrays
-        highs = [candle['high'] for candle in candles if candle.get('high', 0) > 0]
-        lows = [candle['low'] for candle in candles if candle.get('low', 0) > 0]
-        closes = [candle['close'] for candle in candles if candle.get('close', 0) > 0]
-        volumes = [candle.get('volume', 1) for candle in candles]  # Default to 1 if no volume
-        
-        if len(closes) < 20:
-            return {"error": "Insufficient valid price data for analysis"}
-        
-        # Calculate basic metrics
-        current_price = closes[-1]
-        price_range = max(highs) - min(lows)
-        avg_volume = sum(volumes) / len(volumes) if volumes else 1
-        recent_volume = sum(volumes[-10:]) / 10 if len(volumes) >= 10 else avg_volume
-        
-        # Simple trend analysis
-        short_ma = sum(closes[-5:]) / 5 if len(closes) >= 5 else current_price
-        long_ma = sum(closes[-20:]) / 20 if len(closes) >= 20 else current_price
-        trend_direction = "bullish" if short_ma > long_ma else "bearish"
-        
-        # Basic accumulation/distribution detection
-        volume_trend = "increasing" if recent_volume > avg_volume else "decreasing"
-        
-        # Simple phase identification
-        if trend_direction == "bullish" and volume_trend == "increasing":
-            wyckoff_phase = "phase_c_or_d"
-            phase_confidence = 65
-        elif trend_direction == "bearish" and volume_trend == "increasing":
-            wyckoff_phase = "phase_a_or_b"
-            phase_confidence = 60
-        else:
-            wyckoff_phase = "phase_b"
-            phase_confidence = 45
-        
-        # Generate trading recommendations
-        if phase_confidence > 50:
-            if trend_direction == "bullish":
-                action = "buy"
-                entry_level = current_price * 0.999  # Slight pullback entry
-                stop_loss = min(lows[-10:]) * 0.995 if len(lows) >= 10 else current_price * 0.98
-                take_profit = current_price * 1.02   # 2% target
-            else:
-                action = "sell"
-                entry_level = current_price * 1.001
-                stop_loss = max(highs[-10:]) * 1.005 if len(highs) >= 10 else current_price * 1.02
-                take_profit = current_price * 0.98
-        else:
-            action = "wait"
-            entry_level = current_price
-            stop_loss = None
-            take_profit = None
-        
-        return {
-            "structure_analysis": {
-                "structure_type": "accumulation" if trend_direction == "bullish" else "distribution",
-                "phase": wyckoff_phase,
-                "confidence": phase_confidence,
-                "key_levels": {
-                    "current_price": current_price,
-                    "support": min(lows[-10:]) if len(lows) >= 10 else current_price * 0.98,
-                    "resistance": max(highs[-10:]) if len(highs) >= 10 else current_price * 1.02
-                }
-            },
-            "market_regime": {
-                "trend_direction": trend_direction,
-                "volume_trend": volume_trend,
-                "volatility": price_range / current_price if current_price > 0 else 0.01
-            },
-            "trading_recommendations": {
-                "action": action,
-                "confidence": phase_confidence,
-                "entry_level": entry_level,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "reasoning": [
-                    f"Trend is {trend_direction}",
-                    f"Volume is {volume_trend}",
-                    f"Phase identified as {wyckoff_phase}",
-                    f"Manual fallback analysis used"
-                ]
-            },
-            "confidence_score": phase_confidence,
-            "analysis_type": "manual_fallback",
-            "instrument": instrument,
-            "timeframe": timeframe,
-            "candles_analyzed": len(candles),
-            "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
-            "analysis_success": True
-        }
-        
-    except Exception as e:
-        logger.error(f"Manual fallback analysis failed: {str(e)}")
-        return {
-            "error": f"Manual analysis failed: {str(e)}",
-            "analysis_type": "manual_fallback_failed",
-            "instrument": instrument,
-            "timeframe": timeframe,
-            "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
-            "analysis_success": False
-        }
-
-
-# ================================
-# CLEANUP AND UTILITY FUNCTIONS
-# ================================
-
-def cleanup_async_runner():
-    """Cleanup function for graceful shutdown"""
-    global async_runner
-    if async_runner and hasattr(async_runner, '_executor'):
-        async_runner._executor.shutdown(wait=True)
-
-
-# Export all tools for CrewAI import
-__all__ = [
-    'get_live_price',
-    'get_historical_data', 
-    'analyze_wyckoff_patterns',
-    'get_account_info',
-    'get_portfolio_status',
-    'get_open_positions',
-    'get_pending_orders',
-    'calculate_position_size',
-    'execute_market_trade',
-    'execute_limit_trade',
-    'close_position',
-    'cancel_pending_order',
-    'cleanup_async_runner'
-]
+        return {"success": False, "error": error_msg}
