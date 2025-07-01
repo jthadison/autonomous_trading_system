@@ -526,10 +526,10 @@ async def run_different_timeframes():
     return results
 
 async def run_comprehensive_backtest(
-        symbol: str = "EUR_USD",
-        timeframe: str = "M15",
-        bars: int = 100,
-        initial_balance: float = 100000,
+        symbol,
+        timeframe,
+        bars,
+        initial_balance,
         use_real_data: bool = True
     ) -> dict[str, Any]:
     """
@@ -559,7 +559,7 @@ async def run_comprehensive_backtest(
         # Step 2: Run backtest (single class handles everything)
         backtester = EnhancedAgentBacktester(initial_balance)
         results = await backtester.run_agent_backtest(
-            historical_data, initial_balance, symbol
+            historical_data, initial_balance, symbol, timeframe
         )
         
         # Step 3: Return results
@@ -575,8 +575,8 @@ async def main():
     logger.info("🚀 Starting enhanced testing with Oanda Direct API...")
     
     result = await run_comprehensive_backtest(
-        symbol="EUR_USD",
-        timeframe="M15", 
+        symbol="US30_USD",
+        timeframe="M1", 
         bars=200,
         initial_balance=100000,
         use_real_data=True
