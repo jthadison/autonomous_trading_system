@@ -576,7 +576,7 @@ async def main():
     
     result = await run_comprehensive_backtest(
         symbol="EUR_USD",
-        timeframe="M1", 
+        timeframe="M15", 
         bars=200,
         initial_balance=100000,
         use_real_data=True

@@ -847,8 +847,10 @@ class EnhancedAgentBacktester:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_dir = Path("reports")
         report_dir.mkdir(exist_ok=True)
+        # Get timeframe/granularity
+        timeframe = safe_get_attr(results, 'timeframe', 'M15')
         
-        report_path = report_dir / f"backtest_report_{symbol}_{timestamp}.md"
+        report_path = report_dir / f"backtest_report_{symbol}_{timeframe}_{timestamp}.md"
         
         # DETECT RESULT TYPE SAFELY
         is_enhanced = is_enhanced_results(results)
@@ -867,12 +869,41 @@ class EnhancedAgentBacktester:
         avg_win = safe_get_attr(results, 'avg_win', 0)
         avg_loss = safe_get_attr(results, 'avg_loss', 0)
         
+        historical_data = getattr(self, 'current_historical_data', [])
+    
+        if historical_data:
+            first_candle_time = historical_data[0].get('timestamp', 'Unknown')
+            last_candle_time = historical_data[-1].get('timestamp', 'Unknown')
+            total_candles = len(historical_data)
+            
+            # Format timestamps nicely (remove microseconds and 'T')
+            try:
+                if 'T' in first_candle_time:
+                    first_formatted = first_candle_time.replace('T', ' ').split('.')[0]
+                else:
+                    first_formatted = first_candle_time
+                    
+                if 'T' in last_candle_time:
+                    last_formatted = last_candle_time.replace('T', ' ').split('.')[0]
+                else:
+                    last_formatted = last_candle_time
+            except:
+                first_formatted = first_candle_time
+                last_formatted = last_candle_time
+        else:
+            first_formatted = "Unknown"
+            last_formatted = "Unknown"
+            total_candles = 0        
+        
         # Generate report content
         report_content = f"""# 🚀 Autonomous Trading System Backtest Report
 
 ## 📊 Executive Summary
 - **Symbol**: {safe_get_attr(results, 'symbol', symbol)}
 - **Strategy**: Wyckoff Multi-Agent Analysis  
+- **Granularity**: {timeframe} ⏰
+- **Data Range**: {first_formatted} → {last_formatted} 📅
+- **Total Candles**: {total_candles:,} bars
 - **Initial Capital**: ${initial_capital:,.2f}
 - **Final Capital**: ${final_capital:,.2f}
 - **Total Return**: {total_return_pct:+.2f}%
