@@ -308,6 +308,8 @@ class PaperTradingController:
 def main():
     """Main function"""
     controller = PaperTradingController()
+    symbol = "EUR_USD"
+    timeframe = "M5"
     
     # Parse command line arguments
     if len(sys.argv) > 1:
@@ -371,11 +373,11 @@ def main():
                         print(f"✅ Account: {account_info.get('currency', 'USD')}")
                         
                         # Test price feed
-                        price = await oanda.get_current_price("EUR_USD")
-                        print(f"✅ EUR_USD Price: {price.get('bid', 'N/A')}")
+                        price = await oanda.get_current_price(symbol)
+                        print(f"✅ {symbol} Price: {price.get('bid', 'N/A')}")
                         
                         # Test historical data
-                        historical = await oanda.get_historical_data("EUR_USD", "M5", 5)
+                        historical = await oanda.get_historical_data(symbol, timeframe, 5)
                         print(f"✅ Historical Data: {len(historical.get('data', []))} candles")
                         
                         print("\n🎉 All Direct API tests passed!")

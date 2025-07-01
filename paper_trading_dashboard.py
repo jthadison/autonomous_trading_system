@@ -121,7 +121,7 @@ def get_live_prices() -> Dict[str, Any]:
         return {"error": f"Failed to get live prices: {e}"}
 
 @st.cache_data(ttl=10)  # Cache for 10 seconds
-def get_chart_data(symbol: str = "EUR_USD") -> Dict[str, Any]:
+def get_chart_data(symbol) -> Dict[str, Any]:
     """Get historical data for chart using Direct API"""
     if not OANDA_AVAILABLE:
         return {"error": "Oanda Direct API not available"}

@@ -888,6 +888,7 @@ async def test_paper_trading_components():
 
 # CLI Interface
 if __name__ == "__main__":
+    symbol = "EUR_USD"
     print("📈 PAPER TRADING SYSTEM WITH DIRECT OANDA API (FIXED)")
     print("Choose an option:")
     print("1. Run live paper trading")
@@ -912,7 +913,7 @@ if __name__ == "__main__":
             start_time = datetime.now()
             while datetime.now() - start_time < timedelta(minutes=5):
                 await engine.update_positions()
-                signal = await engine.get_trading_signal("EUR_USD")
+                signal = await engine.get_trading_signal(symbol)
                 if signal and signal.action != "hold":
                     await engine.execute_paper_trade(signal)
                 await engine._print_status()

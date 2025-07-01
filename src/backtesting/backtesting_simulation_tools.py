@@ -138,6 +138,10 @@ def simulate_trade_execution(
         decision = json.loads(trade_decision)
         context = json.loads(market_context)
         
+        print(f"decision: {decision}")
+        print("*" * 40)
+        print(f"context: {context}")
+        
         # Extract trade parameters
         side = decision.get('side', 'buy')
         quantity = float(decision.get('quantity', 0))

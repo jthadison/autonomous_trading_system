@@ -343,7 +343,7 @@ class AutonomousTradingSystem():
                 logger.error("Portfolio monitoring error", error=str(e))
                 await asyncio.sleep(check_interval_seconds)
 
-    def execute_trading_session(self, symbol_name: str = "EUR_USD"):
+    def execute_trading_session(self, symbol_name):
         """Execute a complete trading session with monitoring"""
         try:
             # Set up inputs for the crew
@@ -352,7 +352,7 @@ class AutonomousTradingSystem():
                 'symbol': symbol_name,
                 'symbol_name': symbol_name,
                 'current_year': str(datetime.now().year),
-                'timestamp': str(datetime.now().timestamp()).replace('.','')
+                'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             }
             
             logger.info(
@@ -412,7 +412,7 @@ class AutonomousTradingSystem():
                 'start_date': historical_data[0]['timestamp'] if historical_data else None,
                 'end_date': historical_data[-1]['timestamp'] if historical_data else None,
                 'total_bars': len(historical_data),
-                'timestamp': str(datetime.now().timestamp()).replace('.','')
+                'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             }
             
             # Execute backtest - use correct CrewAI syntax
