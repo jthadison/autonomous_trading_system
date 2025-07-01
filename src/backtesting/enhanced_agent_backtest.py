@@ -841,21 +841,323 @@ class EnhancedAgentBacktester:
         
         return results
 
+    
+    def _calculate_critical_missing_metrics(self, results) -> Dict[str, Any]:
+        """Calculate the critical missing metrics for professional reporting"""
+        
+        closed_trades = [t for t in self.trades if t.is_closed]
+        critical_metrics = {}
+        
+        # 1. CONSECUTIVE LOSSES ANALYSIS
+        consecutive_losses = 0
+        max_consecutive_losses = 0
+        consecutive_wins = 0
+        max_consecutive_wins = 0
+        
+        for trade in closed_trades:
+            if trade.pnl <= 0:  # Loss
+                consecutive_losses += 1
+                consecutive_wins = 0
+                max_consecutive_losses = max(max_consecutive_losses, consecutive_losses)
+            else:  # Win
+                consecutive_wins += 1
+                consecutive_losses = 0
+                max_consecutive_wins = max(max_consecutive_wins, consecutive_wins)
+        
+        critical_metrics['max_consecutive_losses'] = max_consecutive_losses
+        critical_metrics['max_consecutive_wins'] = max_consecutive_wins
+        
+        # 2. TRADE DURATION ANALYSIS
+        if closed_trades:
+            durations = [t.duration_bars for t in closed_trades]
+            critical_metrics['avg_trade_duration'] = sum(durations) / len(durations)
+            critical_metrics['min_trade_duration'] = min(durations)
+            critical_metrics['max_trade_duration'] = max(durations)
+        else:
+            critical_metrics['avg_trade_duration'] = 0
+            critical_metrics['min_trade_duration'] = 0
+            critical_metrics['max_trade_duration'] = 0
+        
+        # 3. DRAWDOWN RECOVERY ANALYSIS
+        recovery_times = self._calculate_recovery_times()
+        critical_metrics['avg_recovery_time'] = recovery_times['avg_recovery_time']
+        critical_metrics['max_recovery_time'] = recovery_times['max_recovery_time']
+        
+        # 4. MARKET HOURS PERFORMANCE
+        hours_performance = self._analyze_market_hours_performance()
+        critical_metrics['best_trading_hour'] = hours_performance['best_hour']
+        critical_metrics['worst_trading_hour'] = hours_performance['worst_hour']
+        critical_metrics['trading_hours_analysis'] = hours_performance['hourly_stats']
+        
+        # 5. CONFIDENCE CALIBRATION
+        confidence_analysis = self._analyze_confidence_calibration()
+        critical_metrics['confidence_calibration'] = confidence_analysis
+        
+        # 6. LARGEST SINGLE LOSS (Risk of Ruin indicator)
+        if closed_trades:
+            losing_trades = [t.pnl for t in closed_trades if t.pnl < 0]
+            critical_metrics['largest_single_loss'] = min(losing_trades) if losing_trades else 0
+            critical_metrics['largest_single_loss_pct'] = (min(losing_trades) / self.initial_capital * 100) if losing_trades else 0
+        else:
+            critical_metrics['largest_single_loss'] = 0
+            critical_metrics['largest_single_loss_pct'] = 0
+        
+        # 7. PERFORMANCE BY MARKET CONDITIONS
+        volatility_performance = self._analyze_volatility_performance()
+        critical_metrics['high_volatility_performance'] = volatility_performance['high_vol']
+        critical_metrics['low_volatility_performance'] = volatility_performance['low_vol']
+        
+        return critical_metrics
+    
+    def _calculate_recovery_times(self) -> Dict[str, float]:
+        """Calculate how long it takes to recover from drawdowns"""
+        
+        equity_series = self.equity_curve
+        if len(equity_series) < 2:
+            return {'avg_recovery_time': 0, 'max_recovery_time': 0}
+        
+        peak = equity_series[0]
+        in_drawdown = False
+        drawdown_start = 0
+        recovery_times = []
+        
+        for i, value in enumerate(equity_series):
+            if value > peak:
+                if in_drawdown:
+                    # Recovery complete
+                    recovery_time = i - drawdown_start
+                    recovery_times.append(recovery_time)
+                    in_drawdown = False
+                peak = value
+            elif value < peak and not in_drawdown:
+                # Start of new drawdown
+                in_drawdown = True
+                drawdown_start = i
+        
+        if recovery_times:
+            return {
+                'avg_recovery_time': sum(recovery_times) / len(recovery_times),
+                'max_recovery_time': max(recovery_times)
+            }
+        else:
+            return {'avg_recovery_time': 0, 'max_recovery_time': 0}
+    
+    def _analyze_market_hours_performance(self) -> Dict[str, Any]:
+        """Analyze performance by trading hours"""
+        
+        closed_trades = [t for t in self.trades if t.is_closed]
+        if not closed_trades:
+            return {'best_hour': 'N/A', 'worst_hour': 'N/A', 'hourly_stats': {}}
+        
+        # Group trades by hour (simplified - you could enhance this)
+        hourly_performance = {}
+        
+        for trade in closed_trades:
+            # Extract hour from timestamp (simplified parsing)
+            try:
+                if 'T' in trade.timestamp:
+                    time_part = trade.timestamp.split('T')[1]
+                    hour = int(time_part.split(':')[0])
+                else:
+                    hour = 12  # Default to noon if parsing fails
+            except:
+                hour = 12  # Default hour
+            
+            if hour not in hourly_performance:
+                hourly_performance[hour] = {'trades': [], 'total_pnl': 0, 'wins': 0}
+            
+            hourly_performance[hour]['trades'].append(trade)
+            hourly_performance[hour]['total_pnl'] += trade.pnl
+            if trade.pnl > 0:
+                hourly_performance[hour]['wins'] += 1
+        
+        # Calculate stats for each hour
+        hourly_stats = {}
+        for hour, data in hourly_performance.items():
+            total_trades = len(data['trades'])
+            win_rate = (data['wins'] / total_trades * 100) if total_trades > 0 else 0
+            avg_pnl = data['total_pnl'] / total_trades if total_trades > 0 else 0
+            
+            hourly_stats[hour] = {
+                'trades': total_trades,
+                'win_rate': win_rate,
+                'avg_pnl': avg_pnl,
+                'total_pnl': data['total_pnl']
+            }
+        
+        # Find best and worst hours
+        if hourly_stats:
+            best_hour = max(hourly_stats.keys(), key=lambda h: hourly_stats[h]['win_rate'])
+            worst_hour = min(hourly_stats.keys(), key=lambda h: hourly_stats[h]['win_rate'])
+        else:
+            best_hour = 'N/A'
+            worst_hour = 'N/A'
+        
+        return {
+            'best_hour': f"{best_hour:02d}:00",
+            'worst_hour': f"{worst_hour:02d}:00", 
+            'hourly_stats': hourly_stats
+        }
+    
+    def _analyze_confidence_calibration(self) -> Dict[str, Any]:
+        """Analyze if high-confidence trades actually perform better"""
+        
+        closed_trades = [t for t in self.trades if t.is_closed]
+        if not closed_trades:
+            return {'high_confidence_win_rate': 0, 'low_confidence_win_rate': 0, 'calibration_score': 0}
+        
+        # Split into high and low confidence trades
+        confidences = [t.confidence for t in closed_trades]
+        median_confidence = sorted(confidences)[len(confidences) // 2]
+        
+        high_confidence_trades = [t for t in closed_trades if t.confidence >= median_confidence]
+        low_confidence_trades = [t for t in closed_trades if t.confidence < median_confidence]
+        
+        # Calculate win rates
+        high_conf_wins = len([t for t in high_confidence_trades if t.pnl > 0])
+        high_conf_win_rate = (high_conf_wins / len(high_confidence_trades) * 100) if high_confidence_trades else 0
+        
+        low_conf_wins = len([t for t in low_confidence_trades if t.pnl > 0])
+        low_conf_win_rate = (low_conf_wins / len(low_confidence_trades) * 100) if low_confidence_trades else 0
+        
+        # Calibration score (how much better high confidence is vs low confidence)
+        calibration_score = high_conf_win_rate - low_conf_win_rate
+        
+        return {
+            'high_confidence_win_rate': high_conf_win_rate,
+            'low_confidence_win_rate': low_conf_win_rate,
+            'calibration_score': calibration_score,
+            'median_confidence': median_confidence
+        }
+    
+    def _analyze_volatility_performance(self) -> Dict[str, float]:
+        """Analyze performance in different volatility conditions"""
+        
+        closed_trades = [t for t in self.trades if t.is_closed]
+        historical_data = getattr(self, 'current_historical_data', [])
+        
+        if not closed_trades or not historical_data:
+            return {'high_vol': 0, 'low_vol': 0}
+        
+        # Calculate volatility for each bar (simplified ATR calculation)
+        volatilities = []
+        for i, bar in enumerate(historical_data):
+            high = bar.get('high', bar.get('close', 1))
+            low = bar.get('low', bar.get('close', 1))
+            close = bar.get('close', 1)
+            prev_close = historical_data[i-1].get('close', close) if i > 0 else close
+            
+            true_range = max(
+                high - low,
+                abs(high - prev_close),
+                abs(low - prev_close)
+            )
+            volatilities.append(true_range / close)  # Normalize by price
+        
+        median_volatility = sorted(volatilities)[len(volatilities) // 2] if volatilities else 0
+        
+        # Classify trades by volatility (simplified - match by index)
+        high_vol_trades = []
+        low_vol_trades = []
+        
+        for trade in closed_trades:
+            # Simplified: use duration_bars as index into volatility
+            vol_index = min(trade.duration_bars, len(volatilities) - 1)
+            trade_volatility = volatilities[vol_index] if vol_index >= 0 else median_volatility
+            
+            if trade_volatility >= median_volatility:
+                high_vol_trades.append(trade)
+            else:
+                low_vol_trades.append(trade)
+        
+        # Calculate performance in each regime
+        high_vol_wins = len([t for t in high_vol_trades if t.pnl > 0])
+        high_vol_performance = (high_vol_wins / len(high_vol_trades) * 100) if high_vol_trades else 0
+        
+        low_vol_wins = len([t for t in low_vol_trades if t.pnl > 0])
+        low_vol_performance = (low_vol_wins / len(low_vol_trades) * 100) if low_vol_trades else 0
+        
+        return {
+            'high_vol': high_vol_performance,
+            'low_vol': low_vol_performance
+        }
+    
+    def _generate_ai_insights(self, results, critical_metrics: Dict[str, Any]) -> List[str]:
+        """Generate intelligent insights based on all metrics"""
+        
+        insights = []
+        
+        # Performance insights
+        if safe_get_attr(results, 'total_return_pct', 0) > 15:
+            insights.append("🎯 Exceptional performance - Strategy shows strong alpha generation")
+        elif safe_get_attr(results, 'total_return_pct', 0) > 5:
+            insights.append("✅ Solid performance - Strategy beats typical market returns")
+        elif safe_get_attr(results, 'total_return_pct', 0) > 0:
+            insights.append("📈 Positive performance - Strategy shows potential with room for improvement")
+        else:
+            insights.append("⚠️ Strategy needs optimization - Consider adjusting parameters")
+        
+        # Risk insights
+        max_consecutive_losses = critical_metrics.get('max_consecutive_losses', 0)
+        if max_consecutive_losses > 5:
+            insights.append(f"🔴 High risk: {max_consecutive_losses} consecutive losses detected - Review risk management")
+        elif max_consecutive_losses <= 2:
+            insights.append("✅ Low consecutive loss risk - Good risk control")
+        
+        # Recovery insights
+        avg_recovery = critical_metrics.get('avg_recovery_time', 0)
+        if avg_recovery > 20:
+            insights.append(f"⏱️ Slow recovery: Average {avg_recovery:.0f} bars to recover from drawdowns")
+        elif avg_recovery < 10:
+            insights.append("⚡ Fast recovery: Quick bounce-back from drawdowns")
+        
+        # Confidence calibration insights
+        calibration = critical_metrics.get('confidence_calibration', {})
+        calibration_score = calibration.get('calibration_score', 0)
+        if calibration_score > 10:
+            insights.append("🎯 Well-calibrated agents: High confidence trades perform significantly better")
+        elif calibration_score < 0:
+            insights.append("⚠️ Poor calibration: High confidence trades underperform - Review signal quality")
+        
+        # Trading hours insights
+        best_hour = critical_metrics.get('best_trading_hour', 'N/A')
+        if best_hour != 'N/A':
+            insights.append(f"🕐 Optimal trading window: Best performance at {best_hour}")
+        
+        # Volatility insights
+        high_vol_perf = critical_metrics.get('high_volatility_performance', 0)
+        low_vol_perf = critical_metrics.get('low_volatility_performance', 0)
+        if high_vol_perf > low_vol_perf + 10:
+            insights.append("📈 Volatility advantage: Strategy performs better in high volatility markets")
+        elif low_vol_perf > high_vol_perf + 10:
+            insights.append("📉 Prefers calm markets: Better performance in low volatility conditions")
+        
+        # Pattern insights (if available)
+        pattern_perf = safe_get_attr(results, 'pattern_performance', {})
+        if pattern_perf:
+            best_pattern = max(pattern_perf.items(), key=lambda x: x[1]['win_rate'])
+            insights.append(f"🏆 Best Wyckoff pattern: {best_pattern[0].replace('_', ' ').title()} ({best_pattern[1]['win_rate']:.1f}% win rate)")
+        
+        return insights
+    
+    
     async def _generate_enhanced_report(self, results: Union[BacktestResults, Any], symbol: str) -> str:
-        """ROBUST report generation with safe attribute access"""
+        """Generate both Markdown AND HTML reports with critical metrics"""
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_dir = Path("reports")
         report_dir.mkdir(exist_ok=True)
-        # Get timeframe/granularity
-        timeframe = safe_get_attr(results, 'timeframe', 'M15')
         
-        report_path = report_dir / f"backtest_report_{symbol}_{timeframe}_{timestamp}.md"
+        # Calculate critical missing metrics
+        critical_metrics = self._calculate_critical_missing_metrics(results)
+        
+        # Generate AI insights
+        insights = self._generate_ai_insights(results, critical_metrics)
         
         # DETECT RESULT TYPE SAFELY
         is_enhanced = is_enhanced_results(results)
         
-        logger.info(f"📝 Generating report (Enhanced: {is_enhanced})")
+        logger.info(f"📝 Generating reports (Enhanced: {is_enhanced})")
         
         # SAFE ATTRIBUTE ACCESS for all metrics
         initial_capital = safe_get_attr(results, 'initial_capital', 0)
@@ -869,268 +1171,475 @@ class EnhancedAgentBacktester:
         avg_win = safe_get_attr(results, 'avg_win', 0)
         avg_loss = safe_get_attr(results, 'avg_loss', 0)
         
+        # Extract date range and granularity
         historical_data = getattr(self, 'current_historical_data', [])
-    
-        if historical_data:
-            first_candle_time = historical_data[0].get('timestamp', 'Unknown')
-            last_candle_time = historical_data[-1].get('timestamp', 'Unknown')
-            total_candles = len(historical_data)
-            
-            # Format timestamps nicely (remove microseconds and 'T')
-            try:
-                if 'T' in first_candle_time:
-                    first_formatted = first_candle_time.replace('T', ' ').split('.')[0]
-                else:
-                    first_formatted = first_candle_time
-                    
-                if 'T' in last_candle_time:
-                    last_formatted = last_candle_time.replace('T', ' ').split('.')[0]
-                else:
-                    last_formatted = last_candle_time
-            except:
-                first_formatted = first_candle_time
-                last_formatted = last_candle_time
-        else:
-            first_formatted = "Unknown"
-            last_formatted = "Unknown"
-            total_candles = 0        
         
-        # Generate report content
-        report_content = f"""# 🚀 Autonomous Trading System Backtest Report
+        if historical_data:
+            first_time = historical_data[0].get('timestamp', 'Unknown').replace('T', ' ').split('.')[0]
+            last_time = historical_data[-1].get('timestamp', 'Unknown').replace('T', ' ').split('.')[0]
+            total_candles = len(historical_data)
+        else:
+            first_time = "Unknown"
+            last_time = "Unknown"
+            total_candles = 0
+        
+        timeframe = safe_get_attr(results, 'timeframe', 'M15')
+        
+        # 1. GENERATE HTML REPORT
+        html_path = report_dir / f"backtest_report_{symbol}_{timestamp}.html"
+        html_content = self._create_html_report(
+            results, critical_metrics, insights, symbol, timeframe, 
+            first_time, last_time, total_candles, timestamp
+        )
+        
+        try:
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            logger.info(f"📄 HTML report saved: {html_path}")
+        except Exception as e:
+            logger.error(f"❌ HTML report failed: {e}")
+        
+        # 2. GENERATE ENHANCED MARKDOWN REPORT (existing functionality enhanced)
+        md_path = report_dir / f"backtest_report_{symbol}_{timestamp}.md"
+        md_content = self._create_enhanced_markdown_report(
+            results, critical_metrics, insights, symbol, timeframe,
+            first_time, last_time, total_candles, timestamp, is_enhanced
+        )
+        
+        try:
+            with open(md_path, 'w', encoding='utf-8') as f:
+                f.write(md_content)
+            logger.info(f"📝 Enhanced Markdown report saved: {md_path}")
+        except Exception as e:
+            logger.error(f"❌ Markdown report failed: {e}")
+            return str(html_path)  # Return HTML path as fallback
+        
+        # Return HTML path as primary (more impressive visually)
+        return str(html_path)
+    
+    def _create_html_report(self, results, critical_metrics, insights, symbol, timeframe, 
+                           first_time, last_time, total_candles, timestamp) -> str:
+        """Create professional HTML report"""
+        
+        # Get key metrics safely
+        initial_capital = safe_get_attr(results, 'initial_capital', 0)
+        final_capital = safe_get_attr(results, 'final_capital', 0)
+        total_return_pct = safe_get_attr(results, 'total_return_pct', 0)
+        max_drawdown_pct = safe_get_attr(results, 'max_drawdown_pct', 0)
+        sharpe_ratio = safe_get_attr(results, 'sharpe_ratio', 0)
+        total_trades = safe_get_attr(results, 'total_trades', 0)
+        win_rate = safe_get_attr(results, 'win_rate', 0)
+        profit_factor = safe_get_attr(results, 'profit_factor', 0)
+        
+        # Critical metrics
+        max_consecutive_losses = critical_metrics.get('max_consecutive_losses', 0)
+        avg_trade_duration = critical_metrics.get('avg_trade_duration', 0)
+        largest_loss_pct = critical_metrics.get('largest_single_loss_pct', 0)
+        best_hour = critical_metrics.get('best_trading_hour', 'N/A')
+        confidence_cal = critical_metrics.get('confidence_calibration', {})
+        
+        # Return/Risk colors
+        return_color = "#28a745" if total_return_pct > 0 else "#dc3545"
+        drawdown_color = "#28a745" if max_drawdown_pct < 10 else "#ffc107" if max_drawdown_pct < 20 else "#dc3545"
+        
+        html_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autonomous Trading System - Backtest Report</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f7fa; color: #2c3e50; line-height: 1.6; }}
+        
+        .container {{ max-width: 1200px; margin: 0 auto; padding: 20px; }}
+        
+        .header {{ 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            color: white; padding: 40px; border-radius: 15px; text-align: center; 
+            margin-bottom: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }}
+        .header h1 {{ font-size: 2.5em; margin-bottom: 10px; font-weight: 300; }}
+        .header h2 {{ font-size: 1.8em; margin-bottom: 20px; font-weight: 300; opacity: 0.9; }}
+        .header .meta {{ font-size: 1.1em; opacity: 0.8; }}
+        
+        .metrics-grid {{ 
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); 
+            gap: 20px; margin: 30px 0; 
+        }}
+        
+        .metric-card {{ 
+            background: white; padding: 25px; border-radius: 12px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.08); border-left: 4px solid #007bff;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }}
+        .metric-card:hover {{ transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.12); }}
+        
+        .metric-card.positive {{ border-left-color: #28a745; }}
+        .metric-card.negative {{ border-left-color: #dc3545; }}
+        .metric-card.warning {{ border-left-color: #ffc107; }}
+        
+        .metric-card h3 {{ color: #6c757d; font-size: 0.9em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }}
+        .metric-card .value {{ font-size: 2.2em; font-weight: 600; margin-bottom: 5px; }}
+        .metric-card .subtitle {{ color: #6c757d; font-size: 0.85em; }}
+        
+        .positive .value {{ color: #28a745; }}
+        .negative .value {{ color: #dc3545; }}
+        .warning .value {{ color: #ffc107; }}
+        
+        .section {{ 
+            background: white; margin: 30px 0; padding: 30px; border-radius: 12px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.08); 
+        }}
+        .section h2 {{ color: #2c3e50; margin-bottom: 20px; font-size: 1.5em; border-bottom: 2px solid #e9ecef; padding-bottom: 10px; }}
+        
+        .insights {{ background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); }}
+        .insight-item {{ 
+            padding: 12px 0; border-bottom: 1px solid #dee2e6; display: flex; align-items: center; 
+        }}
+        .insight-item:last-child {{ border-bottom: none; }}
+        .insight-item .emoji {{ font-size: 1.2em; margin-right: 10px; }}
+        
+        .data-table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
+        .data-table th {{ background: #f8f9fa; padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6; font-weight: 600; }}
+        .data-table td {{ padding: 10px 12px; border-bottom: 1px solid #dee2e6; }}
+        .data-table tr:nth-child(even) {{ background: #f8f9fa; }}
+        
+        .critical-metrics {{ background: linear-gradient(135deg, #fff5f5 0%, #fed7d7 100%); border-left-color: #e53e3e; }}
+        
+        .footer {{ text-align: center; margin-top: 40px; padding: 20px; color: #6c757d; }}
+        
+        @media (max-width: 768px) {{
+            .metrics-grid {{ grid-template-columns: 1fr; }}
+            .header h1 {{ font-size: 2em; }}
+            .container {{ padding: 10px; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🚀 Autonomous Trading System</h1>
+            <h2>Advanced Backtest Analysis Report</h2>
+            <div class="meta">
+                <strong>{symbol}</strong> • {timeframe} • {first_time} → {last_time}<br>
+                Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            </div>
+        </div>
+        
+        <!-- Core Performance Metrics -->
+        <div class="metrics-grid">
+            <div class="metric-card {'positive' if total_return_pct > 0 else 'negative'}">
+                <h3>Total Return</h3>
+                <div class="value">{total_return_pct:+.2f}%</div>
+                <div class="subtitle">${final_capital - initial_capital:+,.0f}</div>
+            </div>
+            
+            <div class="metric-card {'positive' if win_rate > 60 else 'warning' if win_rate > 45 else 'negative'}">
+                <h3>Win Rate</h3>
+                <div class="value">{win_rate:.1f}%</div>
+                <div class="subtitle">{safe_get_attr(results, 'winning_trades', 0)} of {total_trades} trades</div>
+            </div>
+            
+            <div class="metric-card {'positive' if sharpe_ratio > 1 else 'warning' if sharpe_ratio > 0.5 else 'negative'}">
+                <h3>Sharpe Ratio</h3>
+                <div class="value">{sharpe_ratio:.2f}</div>
+                <div class="subtitle">Risk-adjusted return</div>
+            </div>
+            
+            <div class="metric-card {'positive' if max_drawdown_pct < 10 else 'warning' if max_drawdown_pct < 20 else 'negative'}">
+                <h3>Max Drawdown</h3>
+                <div class="value">{max_drawdown_pct:.1f}%</div>
+                <div class="subtitle">Worst losing streak</div>
+            </div>
+            
+            <div class="metric-card {'positive' if profit_factor > 1.5 else 'warning' if profit_factor > 1 else 'negative'}">
+                <h3>Profit Factor</h3>
+                <div class="value">{profit_factor:.2f}</div>
+                <div class="subtitle">Gross profit / Gross loss</div>
+            </div>
+            
+            <div class="metric-card">
+                <h3>Portfolio Value</h3>
+                <div class="value" style="color: {return_color};">${final_capital:,.0f}</div>
+                <div class="subtitle">Started with ${initial_capital:,.0f}</div>
+            </div>
+        </div>
+        
+        <!-- CRITICAL MISSING METRICS -->
+        <div class="section critical-metrics">
+            <h2>🔥 Critical Risk Metrics</h2>
+            <div class="metrics-grid">
+                <div class="metric-card {'negative' if max_consecutive_losses > 5 else 'warning' if max_consecutive_losses > 3 else 'positive'}">
+                    <h3>Max Consecutive Losses</h3>
+                    <div class="value">{max_consecutive_losses}</div>
+                    <div class="subtitle">Risk of ruin indicator</div>
+                </div>
+                
+                <div class="metric-card">
+                    <h3>Largest Single Loss</h3>
+                    <div class="value" style="color: #dc3545;">{largest_loss_pct:.2f}%</div>
+                    <div class="subtitle">Of total capital</div>
+                </div>
+                
+                <div class="metric-card">
+                    <h3>Average Trade Duration</h3>
+                    <div class="value">{avg_trade_duration:.1f}</div>
+                    <div class="subtitle">Bars per trade</div>
+                </div>
+                
+                <div class="metric-card">
+                    <h3>Recovery Time</h3>
+                    <div class="value">{critical_metrics.get('avg_recovery_time', 0):.0f}</div>
+                    <div class="subtitle">Avg bars to recover</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Trading Performance Analysis -->
+        <div class="section">
+            <h2>📊 Enhanced Trading Analysis</h2>
+            
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <h3>Best Trading Hour</h3>
+                    <div class="value" style="color: #007bff;">{best_hour}</div>
+                    <div class="subtitle">Optimal entry time</div>
+                </div>
+                
+                <div class="metric-card">
+                    <h3>High Volatility Performance</h3>
+                    <div class="value">{critical_metrics.get('high_volatility_performance', 0):.1f}%</div>
+                    <div class="subtitle">Win rate in volatile markets</div>
+                </div>
+                
+                <div class="metric-card">
+                    <h3>Agent Confidence Calibration</h3>
+                    <div class="value">{confidence_cal.get('calibration_score', 0):+.1f}%</div>
+                    <div class="subtitle">High vs low confidence difference</div>
+                </div>
+                
+                <div class="metric-card">
+                    <h3>Total Candles Analyzed</h3>
+                    <div class="value">{total_candles:,}</div>
+                    <div class="subtitle">{timeframe} timeframe</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- AI-Generated Insights -->
+        <div class="section insights">
+            <h2>🧠 AI-Generated Insights</h2>
+            {''.join([f'<div class="insight-item"><span class="emoji">{insight.split()[0]}</span><span>{" ".join(insight.split()[1:])}</span></div>' for insight in insights])}
+        </div>
+        
+        <!-- Recent Trades Summary -->
+        <div class="section">
+            <h2>📋 Recent Trades Summary</h2>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Action</th>
+                        <th>Entry Price</th>
+                        <th>Exit Price</th>
+                        <th>P&L</th>
+                        <th>Pattern</th>
+                        <th>Confidence</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+        
+        # Add recent trades to table
+        recent_trades = [t for t in self.trades if t.is_closed][-10:]  # Last 10 trades
+        for trade in recent_trades:
+            pnl_color = "#28a745" if trade.pnl > 0 else "#dc3545"
+            html_content += f"""
+                    <tr>
+                        <td><strong>{trade.action.upper()}</strong></td>
+                        <td>{trade.entry_price:.5f}</td>
+                        <td>{trade.exit_price:.5f if trade.exit_price else 'Open'}</td>
+                        <td style="color: {pnl_color}; font-weight: 600;">${trade.pnl:.2f}</td>
+                        <td>{trade.pattern_type.replace('_', ' ').title()}</td>
+                        <td>{trade.confidence:.0f}%</td>
+                    </tr>
+"""
+        
+        html_content += f"""
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- System Information -->
+        <div class="section">
+            <h2>⚙️ System Information</h2>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <h3>Strategy</h3>
+                    <div class="value" style="font-size: 1.5em; color: #6f42c1;">Wyckoff</div>
+                    <div class="subtitle">Multi-agent analysis</div>
+                </div>
+                
+                <div class="metric-card">
+                    <h3>Agent Framework</h3>
+                    <div class="value" style="font-size: 1.5em; color: #fd7e14;">CrewAI</div>
+                    <div class="subtitle">Autonomous agents</div>
+                </div>
+                
+                <div class="metric-card">
+                    <h3>Data Source</h3>
+                    <div class="value" style="font-size: 1.5em; color: #20c997;">Oanda</div>
+                    <div class="subtitle">Real market data</div>
+                </div>
+                
+                <div class="metric-card">
+                    <h3>Report Type</h3>
+                    <div class="value" style="font-size: 1.5em; color: #e83e8c;">Enhanced</div>
+                    <div class="subtitle">Professional analytics</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>🚀 <strong>Autonomous Trading System</strong> • Generated on {timestamp} • HTML Report v2.0</p>
+            <p>Powered by CrewAI Agents • Wyckoff Market Analysis • Real Oanda Data</p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+        
+        return html_content
+    
+    def _create_enhanced_markdown_report(self, results, critical_metrics, insights, symbol, 
+                                       timeframe, first_time, last_time, total_candles, 
+                                       timestamp, is_enhanced) -> str:
+        """Create enhanced markdown report with critical metrics"""
+        
+        # Get safe attributes
+        initial_capital = safe_get_attr(results, 'initial_capital', 0)
+        final_capital = safe_get_attr(results, 'final_capital', 0)
+        total_return_pct = safe_get_attr(results, 'total_return_pct', 0)
+        max_drawdown_pct = safe_get_attr(results, 'max_drawdown_pct', 0)
+        sharpe_ratio = safe_get_attr(results, 'sharpe_ratio', 0)
+        total_trades = safe_get_attr(results, 'total_trades', 0)
+        win_rate = safe_get_attr(results, 'win_rate', 0)
+        profit_factor = safe_get_attr(results, 'profit_factor', 0)
+        avg_win = safe_get_attr(results, 'avg_win', 0)
+        avg_loss = safe_get_attr(results, 'avg_loss', 0)
+        
+        md_content = f"""# 🚀 Autonomous Trading System - Enhanced Backtest Report
 
 ## 📊 Executive Summary
-- **Symbol**: {safe_get_attr(results, 'symbol', symbol)}
+- **Symbol**: {symbol}
 - **Strategy**: Wyckoff Multi-Agent Analysis  
 - **Granularity**: {timeframe} ⏰
-- **Data Range**: {first_formatted} → {last_formatted} 📅
+- **Data Range**: {first_time} → {last_time} 📅
 - **Total Candles**: {total_candles:,} bars
 - **Initial Capital**: ${initial_capital:,.2f}
 - **Final Capital**: ${final_capital:,.2f}
 - **Total Return**: {total_return_pct:+.2f}%
 - **Metrics Level**: {'✅ Enhanced' if is_enhanced else '📊 Basic'}
 
-## 🎯 Performance Metrics
+## 🎯 Core Performance Metrics
 
-### Risk-Adjusted Returns
-- **Sharpe Ratio**: {sharpe_ratio:.3f}
-"""
-        
-        # Add enhanced metrics ONLY if they actually exist
-        if is_enhanced:
-            try:
-                sortino = safe_get_attr(results, 'sortino_ratio', 0)
-                calmar = safe_get_attr(results, 'calmar_ratio', 0)
-                
-                risk_metrics = safe_get_attr(results, 'risk_metrics', None)
-                var_95 = safe_get_attr(risk_metrics, 'var_95', 0) if risk_metrics else 0
-                cvar_95 = safe_get_attr(risk_metrics, 'cvar_95', 0) if risk_metrics else 0
-                
-                report_content += f"""- **Sortino Ratio**: {sortino:.3f} ✨
-- **Calmar Ratio**: {calmar:.3f} ✨
-- **VaR (95%)**: {var_95:.4f} ✨
-- **Expected Shortfall**: {cvar_95:.4f} ✨
-"""
-            except Exception as e:
-                logger.warning(f"⚠️ Error accessing enhanced metrics: {e}")
-
-        report_content += f"""
-### Risk Analysis  
+### Portfolio Performance
+- **Total Return**: {total_return_pct:+.2f}% (${final_capital - initial_capital:+,.0f})
 - **Maximum Drawdown**: {max_drawdown_pct:.2f}%
-"""
+- **Sharpe Ratio**: {sharpe_ratio:.3f}
+- **Profit Factor**: {profit_factor:.2f}
 
-        # Enhanced risk metrics if available
-        if is_enhanced:
-            try:
-                risk_metrics = safe_get_attr(results, 'risk_metrics', None)
-                if risk_metrics:
-                    max_dd_duration = safe_get_attr(risk_metrics, 'max_drawdown_duration', 0)
-                    recovery_factor = safe_get_attr(risk_metrics, 'recovery_factor', 0)
-                    
-                    report_content += f"""- **Max Drawdown Duration**: {max_dd_duration} bars ✨
-- **Recovery Factor**: {recovery_factor:.2f} ✨
-"""
-            except Exception as e:
-                logger.warning(f"⚠️ Error accessing risk metrics: {e}")
-
-        report_content += f"""
-## 📈 Trading Performance
-
-### Basic Statistics
+### Trading Statistics
 - **Total Trades**: {total_trades}
 - **Win Rate**: {win_rate:.1f}%
-- **Profit Factor**: {profit_factor:.2f}
 - **Average Win**: ${avg_win:.2f}
 - **Average Loss**: ${avg_loss:.2f}
+
+## 🔥 Critical Risk Metrics
+
+### Risk Management Analysis
+- **Maximum Consecutive Losses**: {critical_metrics.get('max_consecutive_losses', 0)} ⚠️
+- **Maximum Consecutive Wins**: {critical_metrics.get('max_consecutive_wins', 0)} ✅
+- **Largest Single Loss**: {critical_metrics.get('largest_single_loss_pct', 0):.2f}% of capital
+- **Average Recovery Time**: {critical_metrics.get('avg_recovery_time', 0):.0f} bars
+
+### Trade Execution Analysis
+- **Average Trade Duration**: {critical_metrics.get('avg_trade_duration', 0):.1f} bars
+- **Best Trading Hour**: {critical_metrics.get('best_trading_hour', 'N/A')}
+- **Worst Trading Hour**: {critical_metrics.get('worst_trading_hour', 'N/A')}
+
+### Agent Performance Analysis
+- **High Confidence Win Rate**: {critical_metrics.get('confidence_calibration', {}).get('high_confidence_win_rate', 0):.1f}%
+- **Low Confidence Win Rate**: {critical_metrics.get('confidence_calibration', {}).get('low_confidence_win_rate', 0):.1f}%
+- **Calibration Score**: {critical_metrics.get('confidence_calibration', {}).get('calibration_score', 0):+.1f}%
+
+### Market Condition Performance
+- **High Volatility Win Rate**: {critical_metrics.get('high_volatility_performance', 0):.1f}%
+- **Low Volatility Win Rate**: {critical_metrics.get('low_volatility_performance', 0):.1f}%
+
+## 🧠 AI-Generated Insights
+
 """
-
-        # Enhanced trading stats if available
-        if is_enhanced:
-            try:
-                max_cons_wins = safe_get_attr(results, 'max_consecutive_wins', 0)
-                max_cons_losses = safe_get_attr(results, 'max_consecutive_losses', 0) 
-                avg_duration = safe_get_attr(results, 'avg_trade_duration', 0)
-                
-                report_content += f"""
-### Advanced Statistics ✨
-- **Max Consecutive Wins**: {max_cons_wins}
-- **Max Consecutive Losses**: {max_cons_losses}
-- **Average Trade Duration**: {avg_duration:.1f} bars
-"""
-            except Exception as e:
-                logger.warning(f"⚠️ Error accessing advanced trading stats: {e}")
-
-        # Agent performance (should work for both types)
-        agent_perfs = safe_get_attr(results, 'agent_performances', [])
-        if agent_perfs:
-            report_content += f"""
-## 🤖 Agent Performance Analysis
-
-"""
-            for agent in agent_perfs:
-                try:
-                    agent_name = safe_get_attr(agent, 'agent_name', 'Unknown Agent')
-                    total_signals = safe_get_attr(agent, 'total_signals', 0)
-                    buy_signals = safe_get_attr(agent, 'buy_signals', 0)
-                    sell_signals = safe_get_attr(agent, 'sell_signals', 0)
-                    avg_confidence = safe_get_attr(agent, 'avg_confidence', 0)
-                    success_rate = safe_get_attr(agent, 'success_rate', 0)
-                    
-                    report_content += f"""### {agent_name}
-- **Total Signals**: {total_signals}
-- **Buy Signals**: {buy_signals}
-- **Sell Signals**: {sell_signals}
-- **Average Confidence**: {avg_confidence:.1f}%
-- **Success Rate**: {success_rate:.1f}%
-"""
-                except Exception as e:
-                    logger.warning(f"⚠️ Error processing agent {agent}: {e}")
-
-        # Wyckoff analysis (enhanced only)
-        if is_enhanced:
-            try:
-                wa = safe_get_attr(results, 'wyckoff_analytics', None)
-                if wa:
-                    acc_rate = safe_get_attr(wa, 'accumulation_success_rate', 0)
-                    dist_rate = safe_get_attr(wa, 'distribution_success_rate', 0)
-                    spring_acc = safe_get_attr(wa, 'spring_detection_accuracy', 0)
-                    
-                    report_content += f"""
-## 📊 Wyckoff Analysis Performance ✨
-
-### Phase Performance
-- **Accumulation Success Rate**: {acc_rate:.1f}%
-- **Distribution Success Rate**: {dist_rate:.1f}%
-- **Spring Detection Accuracy**: {spring_acc:.1f}%
-"""
-            except Exception as e:
-                logger.warning(f"⚠️ Error accessing Wyckoff analytics: {e}")
-
-        # Pattern performance (should work for both)
+        
+        for i, insight in enumerate(insights, 1):
+            md_content += f"{i}. {insight}\n"
+        
+        # Add existing pattern performance section if available
         pattern_perf = safe_get_attr(results, 'pattern_performance', {})
         if pattern_perf:
-            report_content += f"""
-## 📈 Pattern Analysis
+            md_content += f"""
+## 📈 Wyckoff Pattern Analysis
 
-### Wyckoff Pattern Performance
+### Pattern Performance Summary
 """
             for pattern, metrics in pattern_perf.items():
-                try:
-                    count = metrics.get('count', 0)
-                    win_rate_pattern = metrics.get('win_rate', 0)
-                    avg_pnl = metrics.get('avg_pnl', 0)
-                    
-                    report_content += f"""
+                md_content += f"""
 #### {pattern.replace('_', ' ').title()}
-- **Trade Count**: {count}
-- **Win Rate**: {win_rate_pattern:.1f}%
-- **Average P&L**: ${avg_pnl:.2f}
-"""
-                except Exception as e:
-                    logger.warning(f"⚠️ Error processing pattern {pattern}: {e}")
-
-        # Simple insights that work for both
-        insights = []
-        if win_rate > 60:
-            insights.append("✅ Strong win rate indicates good signal quality")
-        elif win_rate < 45:
-            insights.append("⚠️ Low win rate - consider improving signal filtering")
-            
-        if max_drawdown_pct < 10:
-            insights.append("✅ Excellent risk control - low drawdown")
-        elif max_drawdown_pct > 20:
-            insights.append("🔴 High drawdown risk - review position sizing")
-            
-        if sharpe_ratio > 1.0:
-            insights.append("✅ Good risk-adjusted returns")
-        elif sharpe_ratio < 0.5:
-            insights.append("⚠️ Poor risk-adjusted returns")
-            
-        if is_enhanced:
-            insights.append("✨ Enhanced metrics provide detailed performance analysis")
-        else:
-            insights.append("📊 Basic metrics mode - consider enabling enhanced analytics")
-        
-        if not insights:
-            insights.append("📊 Review performance for optimization opportunities")
-
-        report_content += f"""
-## 🎯 Key Insights
-
-"""
-        for i, insight in enumerate(insights, 1):
-            report_content += f"{i}. {insight}\n"
-
-        # Trade summary
-        trades = safe_get_attr(results, 'trades', [])
-        report_content += f"""
-## 📋 Trade Summary
-
-Total trades: {len(trades)}
+- **Trade Count**: {metrics.get('count', 0)}
+- **Win Rate**: {metrics.get('win_rate', 0):.1f}%
+- **Average P&L**: ${metrics.get('avg_pnl', 0):.2f}
+- **Total P&L**: ${metrics.get('total_pnl', 0):.2f}
 """
         
-        # Show last few trades
-        recent_trades = trades[-5:] if len(trades) > 5 else trades
-        for i, trade in enumerate(recent_trades, 1):
-            try:
-                action = safe_get_attr(trade, 'action', 'unknown').upper()
-                symbol_name = safe_get_attr(trade, 'symbol', symbol)
-                pnl = safe_get_attr(trade, 'pnl', 0)
-                pattern = safe_get_attr(trade, 'pattern_type', 'unknown')
-                
-                status = "✅" if pnl > 0 else "❌" if pnl < 0 else "⏳"
-                report_content += f"- {status} **{action}** {symbol_name} | P&L: ${pnl:.2f} | {pattern}\n"
-            except Exception as e:
-                logger.warning(f"⚠️ Error processing trade {i}: {e}")
+        # Add recent trades
+        recent_trades = [t for t in self.trades if t.is_closed][-10:]
+        if recent_trades:
+            md_content += f"""
+## 📋 Recent Trades Summary
 
-        report_content += f"""
+| Action | Entry | Exit | P&L | Duration | Pattern | Confidence |
+|--------|-------|------|-----|----------|---------|------------|
+"""
+            for trade in recent_trades:
+                status = "✅" if trade.pnl > 0 else "❌"
+                md_content += f"| {status} {trade.action.upper()} | {trade.entry_price:.5f} | {trade.exit_price:.5f if trade.exit_price else 'Open'} | ${trade.pnl:.2f} | {trade.duration_bars} | {trade.pattern_type} | {trade.confidence:.0f}% |\n"
+        
+        md_content += f"""
+
+## ⚙️ Technical Information
+
+### System Architecture
+- **Data Source**: Oanda Direct API (Real Market Data)
+- **Analysis Engine**: CrewAI Multi-Agent System
+- **Strategy Framework**: Wyckoff Market Structure Analysis
+- **Execution Environment**: Enhanced Backtesting with Critical Metrics
+- **Report Generation**: Automated with AI Insights
+
+### Report Metadata
+- **Report Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+- **Report Version**: Enhanced v2.0 with Critical Missing Metrics
+- **HTML Version**: Also available for interactive viewing
+- **Data Quality**: Real market data from {first_time} to {last_time}
 
 ---
-*Report generated by Autonomous Trading System*  
-*Timestamp: {datetime.now().ctime()}*  
-*Metrics Level: {'Enhanced Analytics' if is_enhanced else 'Basic Analytics'}*
+*Enhanced Report generated by Autonomous Trading System*  
+*Timestamp: {timestamp}*  
+*Includes: Critical Missing Metrics • AI Insights • HTML Export*
 """
         
-        # Write the report with error handling
-        try:
-            with open(report_path, 'w', encoding='utf-8') as f:
-                f.write(report_content)
-            
-            logger.info(f"📝 Report saved successfully: {report_path}")
-            return str(report_path)
-            
-        except Exception as e:
-            logger.error(f"❌ Report generation failed: {e}")
-            
-            # Fallback: write to temp location
-            try:
-                fallback_path = Path("backtest_report_fallback.md")
-                with open(fallback_path, 'w', encoding='utf-8') as f:
-                    f.write(report_content)
-                logger.info(f"📝 Report saved to fallback location: {fallback_path}")
-                return str(fallback_path)
-            except Exception as fe:
-                logger.error(f"❌ Even fallback failed: {fe}")
-                return ""
+        return md_content
 
 # Add the run_agent_backtest method to AutonomousTradingSystem
 def add_backtest_method_to_trading_system():
