@@ -3,21 +3,29 @@ Real Historical Data Backtest Runner
 Fetches actual market data from Oanda Direct API for agent-based backtesting
 """
 
+from ast import Dict
 import sys
 import asyncio
 import json
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import Any
+
+from backtesting.enhanced_agent_backtest import EnhancedAgentBacktester
 
 # Add project root to path
 project_root = Path(__file__).resolve().parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
+    
+from src.backtesting.enhanced_backtest_metrics import (
+    EnhancedMetricsCalculator, 
+    EnhancedBacktestResults,
+    enhance_existing_backtest_results
+)
 
 from src.config.logging_config import logger
 from src.autonomous_trading_system.crew import AutonomousTradingSystem
-
-from src.backtesting.enhanced_backtest_integration import run_enhanced_agent_testing
 
 async def get_real_historical_data(
     symbol, 
@@ -346,10 +354,10 @@ def generate_fallback_data(num_bars: int = 50, symbol: str = "EUR_USD") -> list:
     return bars
 
 async def run_real_data_backtest(
-    symbol: str = "EUR_USD",
-    timeframe: str = "M15", 
-    bars: int = 100,
-    initial_balance: float = 100000
+    symbol,
+    timeframe, 
+    bars,
+    initial_balance
 ):
     """
     Run backtest with real historical data from Oanda Direct API
@@ -452,8 +460,8 @@ async def run_multi_symbol_backtest():
         
         result = await run_real_data_backtest(
             symbol=symbol,
-            timeframe="M15",
-            bars=50,  # Smaller for multi-symbol test
+            timeframe="M5",
+            bars=200,  # Smaller for multi-symbol test
             initial_balance=50000
         )
         
@@ -517,28 +525,69 @@ async def run_different_timeframes():
     
     return results
 
+async def run_comprehensive_backtest(
+        symbol: str = "EUR_USD",
+        timeframe: str = "M15",
+        bars: int = 100,
+        initial_balance: float = 100000,
+        use_real_data: bool = True
+    ) -> dict[str, Any]:
+    """
+    SINGLE ENTRY POINT: Run comprehensive backtest
+    
+    Features:
+    ✅ Real Oanda data (with fallback)
+    ✅ Enhanced metrics (optional)
+    ✅ Windows compatibility
+    ✅ Comprehensive reporting
+    ✅ Error handling
+    """
+    
+    logger.info("🚀 COMPREHENSIVE BACKTEST RUNNER")
+    
+    try:
+        # Step 1: Get data (real or fallback)
+        historical_data = None
+        
+        if use_real_data:
+            historical_data = await get_real_historical_data(symbol, timeframe, bars)
+        
+        if not historical_data:
+            logger.info("📊 Using fallback data")
+            historical_data = generate_fallback_data(bars, symbol)
+        
+        # Step 2: Run backtest (single class handles everything)
+        backtester = EnhancedAgentBacktester(initial_balance)
+        results = await backtester.run_agent_backtest(
+            historical_data, initial_balance, symbol
+        )
+        
+        # Step 3: Return results
+        return results
+        
+    except Exception as e:
+        logger.error(f"❌ Comprehensive backtest failed: {e}")
+        return {'success': False, 'error': str(e)}
+
 async def main():
     """Run enhanced testing suite with Oanda Direct API"""
     
     logger.info("🚀 Starting enhanced testing with Oanda Direct API...")
     
-    result = await run_enhanced_agent_testing(
-        symbol="US30_USD",
-        timeframe="M5",
-        bars=500,
-        initial_balance=10000
+    result = await run_comprehensive_backtest(
+        symbol="EUR_USD",
+        timeframe="M15", 
+        bars=200,
+        initial_balance=100000,
+        use_real_data=True
     )
     
-    if result is not None and result['success']:
-        print("✅ Enhanced testing completed!")
-        print(f"📊 Agent Test Report: {result['agent_tests']['report_path']}")
-        print(f"📈 Backtest Report: {result['backtest_results']['report_path']}")
-        print(f"📊 Performance Charts: {result['charts']}")
+    if result.get('success'):
+        print("✅ Backtest completed!")
+        print(f"📊 Return: {result.get('total_return_pct', 0):+.2f}%")
+        print(f"📝 Report: {result.get('report_path')}")
     else:
-        if result:
-            print(f"❌ Testing failed: {result.get('error', 'Unknown error')}")
-        else:
-            print("❌ Testing failed: No result returned.")
+        print(f"❌ Backtest failed: {result.get('error')}")
 
 if __name__ == "__main__":
     asyncio.run(main())
