@@ -243,7 +243,8 @@ class EnhancedAgentBacktester:
         self, 
         historical_data, 
         initial_balance,
-        symbol
+        symbol,
+        timeframe
     ) -> Dict[str, Any]:
         """
         Main backtesting method that tests all agents
@@ -262,21 +263,21 @@ class EnhancedAgentBacktester:
         
         try:
             # Prepare data for agents
-            formatted_data = self._prepare_agent_data(historical_data, symbol)
+            formatted_data = self._prepare_agent_data(historical_data, symbol, timeframe)
             
             # Run analysis with all agents
             agent_results = await self._run_agent_analysis(formatted_data, symbol)
             
             # Process signals and execute trades
             backtest_results = await self._process_agent_signals(
-                agent_results, historical_data, symbol
+                agent_results, historical_data, symbol, timeframe
             )
             
             # Calculate comprehensive metrics (with proper fallback)
-            final_results = self._calculate_comprehensive_metrics(symbol, start_time)
+            final_results = self._calculate_comprehensive_metrics(symbol, timeframe, start_time)
             
             # Generate detailed report (with safe attribute access)
-            report_path = await self._generate_enhanced_report(final_results, symbol)
+            report_path = await self._generate_enhanced_report(final_results, symbol, timeframe)
             
             logger.info("✅ Enhanced agent backtest completed successfully")
             
@@ -286,7 +287,7 @@ class EnhancedAgentBacktester:
                 'results': final_results,
                 'report_path': report_path,
                 'symbol': symbol,
-                'timeframe': 'M15',
+                'timeframe': timeframe,
                 'total_bars_processed': len(historical_data),
                 'initial_balance': self.initial_capital,
                 'final_balance': safe_get_attr(final_results, 'final_capital', self.initial_capital),
@@ -367,7 +368,7 @@ class EnhancedAgentBacktester:
                 f.write(content)
                 return f.name
     
-    def _prepare_agent_data(self, historical_data: List[Dict], symbol: str) -> Dict[str, Any]:
+    def _prepare_agent_data(self, historical_data: List[Dict], symbol: str, timeframe: str) -> Dict[str, Any]:
         """Prepare data in format expected by agents"""
         
         # Convert to format agents expect
@@ -385,7 +386,7 @@ class EnhancedAgentBacktester:
         
         return {
             'symbol_name': symbol,
-            'timeframe': 'M15',
+            'timeframe': timeframe,
             'bars': formatted_bars,
             'current_time': datetime.now().isoformat()
         }
@@ -481,7 +482,8 @@ class EnhancedAgentBacktester:
         self, 
         agent_results: Dict[str, Any], 
         historical_data: List[Dict], 
-        symbol: str
+        symbol: str,
+        timeframe: str
     ):
         """Process agent signals and simulate trading"""
         
@@ -524,7 +526,7 @@ class EnhancedAgentBacktester:
         self._close_all_positions(final_bar, len(historical_data)-1, "backtest_end")
         
         # Calculate final results
-        results = self._calculate_comprehensive_metrics(symbol, datetime.now())
+        results = self._calculate_comprehensive_metrics(symbol, timeframe ,datetime.now())
         
         logger.info(f"✅ Processed {processed_bars} bars, generated {signal_count} signals")
         return results
@@ -670,7 +672,7 @@ class EnhancedAgentBacktester:
         
         return portfolio_value
     
-    def _calculate_comprehensive_metrics(self, symbol: str, start_time: datetime) -> Union[BacktestResults, Any]:
+    def _calculate_comprehensive_metrics(self, symbol: str, timeframe: str, start_time: datetime) -> Union[BacktestResults, Any]:
         """SAFE enhanced metrics calculation with proper fallback"""
         
         logger.info("📊 Calculating comprehensive metrics...")
@@ -704,7 +706,7 @@ class EnhancedAgentBacktester:
                     
                     # Set metadata
                     enhanced_results.symbol = symbol
-                    enhanced_results.timeframe = "M15"
+                    enhanced_results.timeframe = timeframe
                     enhanced_results.start_date = start_time.isoformat()
                     enhanced_results.end_date = datetime.now().isoformat()
                     enhanced_results.bars_processed = len(self.equity_curve)
@@ -827,7 +829,7 @@ class EnhancedAgentBacktester:
             trades=self.trades,
             equity_curve=self.equity_curve,
             symbol=symbol,
-            timeframe="M15",
+            timeframe=timeframe,
             start_date=start_time.isoformat(),
             end_date=datetime.now().isoformat(),
             bars_processed=len(self.equity_curve),
@@ -1141,7 +1143,7 @@ class EnhancedAgentBacktester:
         return insights
     
     
-    async def _generate_enhanced_report(self, results: Union[BacktestResults, Any], symbol: str) -> str:
+    async def _generate_enhanced_report(self, results: Union[BacktestResults, Any], symbol: str, timeframe) -> str:
         """Generate both Markdown AND HTML reports with critical metrics"""
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1183,10 +1185,10 @@ class EnhancedAgentBacktester:
             last_time = "Unknown"
             total_candles = 0
         
-        timeframe = safe_get_attr(results, 'timeframe', 'M15')
+        timeframe = safe_get_attr(results, 'timeframe', timeframe)
         
         # 1. GENERATE HTML REPORT
-        html_path = report_dir / f"backtest_report_{symbol}_{timestamp}.html"
+        html_path = report_dir / f"backtest_report_{symbol}_{timeframe}_{timestamp}.html"
         html_content = self._create_html_report(
             results, critical_metrics, insights, symbol, timeframe, 
             first_time, last_time, total_candles, timestamp
@@ -1200,7 +1202,7 @@ class EnhancedAgentBacktester:
             logger.error(f"❌ HTML report failed: {e}")
         
         # 2. GENERATE ENHANCED MARKDOWN REPORT (existing functionality enhanced)
-        md_path = report_dir / f"backtest_report_{symbol}_{timestamp}.md"
+        md_path = report_dir / f"backtest_report_{symbol}_{timeframe}_{timestamp}.md"
         md_content = self._create_enhanced_markdown_report(
             results, critical_metrics, insights, symbol, timeframe,
             first_time, last_time, total_candles, timestamp, is_enhanced
@@ -1456,16 +1458,20 @@ class EnhancedAgentBacktester:
         recent_trades = [t for t in self.trades if t.is_closed][-10:]  # Last 10 trades
         for trade in recent_trades:
             pnl_color = "#28a745" if trade.pnl > 0 else "#dc3545"
+            
+            # ✅ FIX: Handle exit_price formatting separately
+            exit_price_display = f"{trade.exit_price:.5f}" if trade.exit_price is not None else "Open"
+            
             html_content += f"""
-                    <tr>
-                        <td><strong>{trade.action.upper()}</strong></td>
-                        <td>{trade.entry_price:.5f}</td>
-                        <td>{trade.exit_price:.5f if trade.exit_price else 'Open'}</td>
-                        <td style="color: {pnl_color}; font-weight: 600;">${trade.pnl:.2f}</td>
-                        <td>{trade.pattern_type.replace('_', ' ').title()}</td>
-                        <td>{trade.confidence:.0f}%</td>
-                    </tr>
-"""
+                            <tr>
+                                <td><strong>{trade.action.upper()}</strong></td>
+                                <td>{trade.entry_price:.5f}</td>
+                                <td>{exit_price_display}</td>
+                                <td style="color: {pnl_color}; font-weight: 600;">${trade.pnl:.2f}</td>
+                                <td>{trade.pattern_type.replace('_', ' ').title()}</td>
+                                <td>{trade.confidence:.0f}%</td>
+                            </tr>
+        """
         
         html_content += f"""
                 </tbody>
@@ -1614,7 +1620,9 @@ class EnhancedAgentBacktester:
 """
             for trade in recent_trades:
                 status = "✅" if trade.pnl > 0 else "❌"
-                md_content += f"| {status} {trade.action.upper()} | {trade.entry_price:.5f} | {trade.exit_price:.5f if trade.exit_price else 'Open'} | ${trade.pnl:.2f} | {trade.duration_bars} | {trade.pattern_type} | {trade.confidence:.0f}% |\n"
+                # ✅ FIXED: Handle exit_price formatting separately
+                exit_price_display = f"{trade.exit_price:.5f}" if trade.exit_price is not None else "Open"
+                md_content += f"| {status} {trade.action.upper()} | {trade.entry_price:.5f} | {exit_price_display} | ${trade.pnl:.2f} | {trade.duration_bars} | {trade.pattern_type} | {trade.confidence:.0f}% |\n"
         
         md_content += f"""
 
@@ -1645,10 +1653,10 @@ class EnhancedAgentBacktester:
 def add_backtest_method_to_trading_system():
     """Add the run_agent_backtest method to AutonomousTradingSystem"""
     
-    async def run_agent_backtest(self, historical_data: List[Dict], initial_balance, symbol) -> Dict[str, Any]:
+    async def run_agent_backtest(self, historical_data: List[Dict], initial_balance, symbol, timeframe) -> Dict[str, Any]:
         """Method to add to AutonomousTradingSystem class"""
         backtester = EnhancedAgentBacktester(initial_capital=initial_balance)
-        return await backtester.run_agent_backtest(historical_data, initial_balance, symbol)
+        return await backtester.run_agent_backtest(historical_data, initial_balance, symbol, timeframe)
     
     # Add method to class
     AutonomousTradingSystem.run_agent_backtest = run_agent_backtest  # type: ignore

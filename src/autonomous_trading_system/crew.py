@@ -83,7 +83,7 @@ def get_live_price(instrument: str) -> Dict[str, Any]:
         return {"error": str(e)}
 
 @tool  
-def get_historical_data(instrument: str, timeframe: str = "M15", count: int = 200) -> Dict[str, Any]:
+def get_historical_data(instrument: str, timeframe: str, count: int = 200) -> Dict[str, Any]:
     """Get historical price data using Direct API"""
     async def _get_historical():
         # UPDATED: Use Direct API instead of MCP wrapper
