@@ -1,0 +1,368 @@
+{
+  "validation_summary": {
+    "overall_status": "WARNING",
+    "total_tests": 25,
+    "passed_tests": 19,
+    "failed_tests": 6,
+    "success_rate": 76.0,
+    "timestamp": "2025-07-08T23:15:04.261372+00:00"
+  },
+  "phase_results": {
+    "Setup": {
+      "passed": 3,
+      "total": 3,
+      "success_rate": 100.0
+    },
+    "Imports": {
+      "passed": 5,
+      "total": 7,
+      "success_rate": 71.42857142857143
+    },
+    "Configuration": {
+      "passed": 2,
+      "total": 2,
+      "success_rate": 100.0
+    },
+    "Adapters": {
+      "passed": 3,
+      "total": 3,
+      "success_rate": 100.0
+    },
+    "Router": {
+      "passed": 4,
+      "total": 4,
+      "success_rate": 100.0
+    },
+    "Universal Tools": {
+      "passed": 0,
+      "total": 3,
+      "success_rate": 0.0
+    },
+    "Unknown": {
+      "passed": 1,
+      "total": 2,
+      "success_rate": 50.0
+    },
+    "Performance": {
+      "passed": 1,
+      "total": 1,
+      "success_rate": 100.0
+    }
+  },
+  "detailed_results": {
+    "Setup": [
+      {
+        "test_name": "Directory Structure",
+        "passed": true,
+        "error": null,
+        "details": {
+          "src/platform_abstraction": true,
+          "src/platform_abstraction/adapters": true,
+          "src/platform_abstraction/config": true,
+          "src/platform_abstraction/tests": true
+        },
+        "execution_time_ms": 0.3070831298828125,
+        "timestamp": "2025-07-08T23:14:58.231552+00:00"
+      },
+      {
+        "test_name": "Required Files Exist",
+        "passed": true,
+        "error": null,
+        "details": {
+          "src/platform_abstraction/__init__.py": true,
+          "src/platform_abstraction/models.py": true,
+          "src/platform_abstraction/interface.py": true,
+          "src/platform_abstraction/router.py": true,
+          "src/platform_abstraction/universal_tools.py": true,
+          "src/platform_abstraction/adapters/__init__.py": true,
+          "src/platform_abstraction/adapters/base_adapter.py": true,
+          "src/platform_abstraction/adapters/oanda_adapter.py": true
+        },
+        "execution_time_ms": 0.4546642303466797,
+        "timestamp": "2025-07-08T23:14:58.231965+00:00"
+      },
+      {
+        "test_name": "Python Path Setup",
+        "passed": true,
+        "error": null,
+        "details": {
+          "project_root_in_path": true,
+          "can_import_src": true
+        },
+        "execution_time_ms": 0.010728836059570312,
+        "timestamp": "2025-07-08T23:14:58.232513+00:00"
+      }
+    ],
+    "Imports": [
+      {
+        "test_name": "Core Models Import",
+        "passed": true,
+        "error": null,
+        "details": {
+          "models_imported": true
+        },
+        "execution_time_ms": 10.085105895996094,
+        "timestamp": "2025-07-08T23:14:58.232835+00:00"
+      },
+      {
+        "test_name": "Interface Import",
+        "passed": true,
+        "error": null,
+        "details": {
+          "interface_imported": true
+        },
+        "execution_time_ms": 0.7815361022949219,
+        "timestamp": "2025-07-08T23:14:58.243103+00:00"
+      },
+      {
+        "test_name": "Router Import",
+        "passed": true,
+        "error": null,
+        "details": {
+          "router_imported": true
+        },
+        "execution_time_ms": 19.739627838134766,
+        "timestamp": "2025-07-08T23:14:58.244052+00:00"
+      },
+      {
+        "test_name": "Adapter Imports",
+        "passed": true,
+        "error": null,
+        "details": {
+          "base_adapter": true,
+          "oanda_adapter": true
+        },
+        "execution_time_ms": 1472.1345901489258,
+        "timestamp": "2025-07-08T23:14:58.263957+00:00"
+      },
+      {
+        "test_name": "Universal Tools Import",
+        "passed": false,
+        "error": "name 'ThreadSafeAsyncRunner' is not defined",
+        "details": {
+          "traceback": "Traceback (most recent call last):\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 115, in _run_test\n    test_result = test_func(*args, **kwargs)\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 306, in _test_universal_tools_import\n    from src.platform_abstraction.universal_tools import (\n    ...<3 lines>...\n    )\n  File \"E:\\projects\\autonomous_trading_system\\src\\platform_abstraction\\universal_tools.py\", line 72, in <module>\n    async_runner = ThreadSafeAsyncRunner()\n                   ^^^^^^^^^^^^^^^^^^^^^\nNameError: name 'ThreadSafeAsyncRunner' is not defined\n"
+        },
+        "execution_time_ms": 4512.480974197388,
+        "timestamp": "2025-07-08T23:14:59.736309+00:00"
+      },
+      {
+        "test_name": "Existing Imports",
+        "passed": true,
+        "error": null,
+        "details": {
+          "existing_imports_checked": true
+        },
+        "execution_time_ms": 0.011205673217773438,
+        "timestamp": "2025-07-08T23:15:04.257795+00:00"
+      },
+      {
+        "test_name": "Import Performance",
+        "passed": false,
+        "error": "name 'ThreadSafeAsyncRunner' is not defined",
+        "details": {
+          "traceback": "Traceback (most recent call last):\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 115, in _run_test\n    test_result = test_func(*args, **kwargs)\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 692, in _test_import_performance\n    import src.platform_abstraction.universal_tools\n  File \"E:\\projects\\autonomous_trading_system\\src\\platform_abstraction\\universal_tools.py\", line 72, in <module>\n    async_runner = ThreadSafeAsyncRunner()\n                   ^^^^^^^^^^^^^^^^^^^^^\nNameError: name 'ThreadSafeAsyncRunner' is not defined\n"
+        },
+        "execution_time_ms": 0.7429122924804688,
+        "timestamp": "2025-07-08T23:15:04.259555+00:00"
+      }
+    ],
+    "Configuration": [
+      {
+        "test_name": "Default Configuration",
+        "passed": true,
+        "error": null,
+        "details": {
+          "config_created": true,
+          "primary_platform": "oanda",
+          "has_platforms": false
+        },
+        "execution_time_ms": 0.06699562072753906,
+        "timestamp": "2025-07-08T23:15:04.250928+00:00"
+      },
+      {
+        "test_name": "Configuration Loading",
+        "passed": true,
+        "error": null,
+        "details": {
+          "router_created": true,
+          "config_loaded": true
+        },
+        "execution_time_ms": 0.04792213439941406,
+        "timestamp": "2025-07-08T23:15:04.251133+00:00"
+      }
+    ],
+    "Adapters": [
+      {
+        "test_name": "Oanda Adapter Creation",
+        "passed": true,
+        "error": null,
+        "details": {
+          "adapter_created": true,
+          "platform": "oanda",
+          "connected": false
+        },
+        "execution_time_ms": 0.025272369384765625,
+        "timestamp": "2025-07-08T23:15:04.251596+00:00"
+      },
+      {
+        "test_name": "Adapter Registration",
+        "passed": true,
+        "error": null,
+        "details": {
+          "registry_working": true,
+          "available_platforms": [
+            "oanda"
+          ],
+          "oanda_registered": true
+        },
+        "execution_time_ms": 0.02193450927734375,
+        "timestamp": "2025-07-08T23:15:04.251727+00:00"
+      },
+      {
+        "test_name": "Interface Compliance",
+        "passed": true,
+        "error": null,
+        "details": {
+          "interface_compliant": true,
+          "implemented_methods": {
+            "connect": true,
+            "disconnect": true,
+            "health_check": true,
+            "get_live_price": true,
+            "get_account_info": true,
+            "get_open_positions": true,
+            "execute_market_trade": true,
+            "execute_limit_trade": true
+          }
+        },
+        "execution_time_ms": 0.019788742065429688,
+        "timestamp": "2025-07-08T23:15:04.251840+00:00"
+      }
+    ],
+    "Router": [
+      {
+        "test_name": "Router Creation",
+        "passed": true,
+        "error": null,
+        "details": {
+          "router_created": true,
+          "global_router_available": true
+        },
+        "execution_time_ms": 0.029325485229492188,
+        "timestamp": "2025-07-08T23:15:04.252165+00:00"
+      },
+      {
+        "test_name": "Router Initialization",
+        "passed": true,
+        "error": null,
+        "details": {
+          "router_can_initialize": true,
+          "config_loaded": true
+        },
+        "execution_time_ms": 0.016450881958007812,
+        "timestamp": "2025-07-08T23:15:04.252265+00:00"
+      },
+      {
+        "test_name": "Platform Selection",
+        "passed": true,
+        "error": null,
+        "details": {
+          "platform_selection_working": true,
+          "selected_platform": "oanda"
+        },
+        "execution_time_ms": 0.02002716064453125,
+        "timestamp": "2025-07-08T23:15:04.252375+00:00"
+      },
+      {
+        "test_name": "Router Overhead",
+        "passed": true,
+        "error": null,
+        "details": {
+          "selection_time_100_calls_ms": 0.07748603820800781,
+          "avg_selection_time_ms": 0.0007748603820800781,
+          "performance_acceptable": true
+        },
+        "execution_time_ms": 0.11181831359863281,
+        "timestamp": "2025-07-08T23:15:04.260914+00:00"
+      }
+    ],
+    "Universal Tools": [
+      {
+        "test_name": "Tool Creation",
+        "passed": false,
+        "error": "name 'ThreadSafeAsyncRunner' is not defined",
+        "details": {
+          "traceback": "Traceback (most recent call last):\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 115, in _run_test\n    test_result = test_func(*args, **kwargs)\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 536, in _test_tool_creation\n    from src.platform_abstraction.universal_tools import (\n        execute_market_trade, get_account_info\n    )\n  File \"E:\\projects\\autonomous_trading_system\\src\\platform_abstraction\\universal_tools.py\", line 72, in <module>\n    async_runner = ThreadSafeAsyncRunner()\n                   ^^^^^^^^^^^^^^^^^^^^^\nNameError: name 'ThreadSafeAsyncRunner' is not defined\n"
+        },
+        "execution_time_ms": 1.3136863708496094,
+        "timestamp": "2025-07-08T23:15:04.252707+00:00"
+      },
+      {
+        "test_name": "Tool Signatures",
+        "passed": false,
+        "error": "name 'ThreadSafeAsyncRunner' is not defined",
+        "details": {
+          "traceback": "Traceback (most recent call last):\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 115, in _run_test\n    test_result = test_func(*args, **kwargs)\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 555, in _test_tool_signatures\n    from src.platform_abstraction.universal_tools import execute_market_trade\n  File \"E:\\projects\\autonomous_trading_system\\src\\platform_abstraction\\universal_tools.py\", line 72, in <module>\n    async_runner = ThreadSafeAsyncRunner()\n                   ^^^^^^^^^^^^^^^^^^^^^\nNameError: name 'ThreadSafeAsyncRunner' is not defined\n"
+        },
+        "execution_time_ms": 0.8234977722167969,
+        "timestamp": "2025-07-08T23:15:04.254817+00:00"
+      },
+      {
+        "test_name": "Async Runner",
+        "passed": false,
+        "error": "name 'ThreadSafeAsyncRunner' is not defined",
+        "details": {
+          "traceback": "Traceback (most recent call last):\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 115, in _run_test\n    test_result = test_func(*args, **kwargs)\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 573, in _test_async_runner\n    from src.platform_abstraction.universal_tools import ThreadSafeAsyncRunner\n  File \"E:\\projects\\autonomous_trading_system\\src\\platform_abstraction\\universal_tools.py\", line 72, in <module>\n    async_runner = ThreadSafeAsyncRunner()\n                   ^^^^^^^^^^^^^^^^^^^^^\nNameError: name 'ThreadSafeAsyncRunner' is not defined\n"
+        },
+        "execution_time_ms": 0.7443428039550781,
+        "timestamp": "2025-07-08T23:15:04.256245+00:00"
+      }
+    ],
+    "Unknown": [
+      {
+        "test_name": "Function Signatures",
+        "passed": false,
+        "error": "name 'ThreadSafeAsyncRunner' is not defined",
+        "details": {
+          "traceback": "Traceback (most recent call last):\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 115, in _run_test\n    test_result = test_func(*args, **kwargs)\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 631, in _test_function_signatures\n    from src.platform_abstraction.universal_tools import execute_market_trade\n  File \"E:\\projects\\autonomous_trading_system\\src\\platform_abstraction\\universal_tools.py\", line 72, in <module>\n    async_runner = ThreadSafeAsyncRunner()\n                   ^^^^^^^^^^^^^^^^^^^^^\nNameError: name 'ThreadSafeAsyncRunner' is not defined\n"
+        },
+        "execution_time_ms": 0.7457733154296875,
+        "timestamp": "2025-07-08T23:15:04.257897+00:00"
+      },
+      {
+        "test_name": "Return Formats",
+        "passed": true,
+        "error": null,
+        "details": {
+          "return_format_compatible": true,
+          "note": "Return formats converted to legacy format for compatibility"
+        },
+        "execution_time_ms": 0.011205673217773438,
+        "timestamp": "2025-07-08T23:15:04.259239+00:00"
+      }
+    ],
+    "Performance": [
+      {
+        "test_name": "Memory Usage",
+        "passed": true,
+        "error": null,
+        "details": {
+          "memory_usage_mb": 310.31640625,
+          "memory_acceptable": true
+        },
+        "execution_time_ms": 0.08416175842285156,
+        "timestamp": "2025-07-08T23:15:04.261117+00:00"
+      }
+    ]
+  },
+  "recommendations": [
+    "\u26a0\ufe0f Some issues detected. Review and fix before production use.",
+    "\ud83d\udce6 Imports issues: Check Python path and dependencies",
+    "\ud83d\udee0\ufe0f Universal Tools issues: Check tool implementations",
+    "\ud83d\udccb Next steps:",
+    "   1. Update your crew.py imports",
+    "   2. Test with existing backtests",
+    "   3. Verify live trading functionality",
+    "   4. Monitor performance in production"
+  ]
+}
