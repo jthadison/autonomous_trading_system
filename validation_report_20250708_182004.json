@@ -1,0 +1,373 @@
+{
+  "validation_summary": {
+    "overall_status": "PASSED",
+    "total_tests": 25,
+    "passed_tests": 23,
+    "failed_tests": 2,
+    "success_rate": 92.0,
+    "timestamp": "2025-07-08T23:20:04.723791+00:00"
+  },
+  "phase_results": {
+    "Setup": {
+      "passed": 3,
+      "total": 3,
+      "success_rate": 100.0
+    },
+    "Imports": {
+      "passed": 7,
+      "total": 7,
+      "success_rate": 100.0
+    },
+    "Configuration": {
+      "passed": 2,
+      "total": 2,
+      "success_rate": 100.0
+    },
+    "Adapters": {
+      "passed": 3,
+      "total": 3,
+      "success_rate": 100.0
+    },
+    "Router": {
+      "passed": 4,
+      "total": 4,
+      "success_rate": 100.0
+    },
+    "Universal Tools": {
+      "passed": 2,
+      "total": 3,
+      "success_rate": 66.66666666666666
+    },
+    "Unknown": {
+      "passed": 1,
+      "total": 2,
+      "success_rate": 50.0
+    },
+    "Performance": {
+      "passed": 1,
+      "total": 1,
+      "success_rate": 100.0
+    }
+  },
+  "detailed_results": {
+    "Setup": [
+      {
+        "test_name": "Directory Structure",
+        "passed": true,
+        "error": null,
+        "details": {
+          "src/platform_abstraction": true,
+          "src/platform_abstraction/adapters": true,
+          "src/platform_abstraction/config": true,
+          "src/platform_abstraction/tests": true
+        },
+        "execution_time_ms": 0.26535987854003906,
+        "timestamp": "2025-07-08T23:19:58.585515+00:00"
+      },
+      {
+        "test_name": "Required Files Exist",
+        "passed": true,
+        "error": null,
+        "details": {
+          "src/platform_abstraction/__init__.py": true,
+          "src/platform_abstraction/models.py": true,
+          "src/platform_abstraction/interface.py": true,
+          "src/platform_abstraction/router.py": true,
+          "src/platform_abstraction/universal_tools.py": true,
+          "src/platform_abstraction/adapters/__init__.py": true,
+          "src/platform_abstraction/adapters/base_adapter.py": true,
+          "src/platform_abstraction/adapters/oanda_adapter.py": true
+        },
+        "execution_time_ms": 0.4355907440185547,
+        "timestamp": "2025-07-08T23:19:58.585841+00:00"
+      },
+      {
+        "test_name": "Python Path Setup",
+        "passed": true,
+        "error": null,
+        "details": {
+          "project_root_in_path": true,
+          "can_import_src": true
+        },
+        "execution_time_ms": 0.01049041748046875,
+        "timestamp": "2025-07-08T23:19:58.586319+00:00"
+      }
+    ],
+    "Imports": [
+      {
+        "test_name": "Core Models Import",
+        "passed": true,
+        "error": null,
+        "details": {
+          "models_imported": true
+        },
+        "execution_time_ms": 5.768775939941406,
+        "timestamp": "2025-07-08T23:19:58.586432+00:00"
+      },
+      {
+        "test_name": "Interface Import",
+        "passed": true,
+        "error": null,
+        "details": {
+          "interface_imported": true
+        },
+        "execution_time_ms": 0.659942626953125,
+        "timestamp": "2025-07-08T23:19:58.592329+00:00"
+      },
+      {
+        "test_name": "Router Import",
+        "passed": true,
+        "error": null,
+        "details": {
+          "router_imported": true
+        },
+        "execution_time_ms": 18.198013305664062,
+        "timestamp": "2025-07-08T23:19:58.593083+00:00"
+      },
+      {
+        "test_name": "Adapter Imports",
+        "passed": true,
+        "error": null,
+        "details": {
+          "base_adapter": true,
+          "oanda_adapter": true
+        },
+        "execution_time_ms": 1473.5615253448486,
+        "timestamp": "2025-07-08T23:19:58.611413+00:00"
+      },
+      {
+        "test_name": "Universal Tools Import",
+        "passed": true,
+        "error": null,
+        "details": {
+          "universal_tools_imported": true
+        },
+        "execution_time_ms": 4598.7389087677,
+        "timestamp": "2025-07-08T23:20:00.085175+00:00"
+      },
+      {
+        "test_name": "Existing Imports",
+        "passed": true,
+        "error": null,
+        "details": {
+          "existing_imports_checked": true
+        },
+        "execution_time_ms": 0.023365020751953125,
+        "timestamp": "2025-07-08T23:20:04.717072+00:00"
+      },
+      {
+        "test_name": "Import Performance",
+        "passed": true,
+        "error": null,
+        "details": {
+          "import_time_ms": 4.48918342590332,
+          "import_acceptable": true
+        },
+        "execution_time_ms": 4.5032501220703125,
+        "timestamp": "2025-07-08T23:20:04.718715+00:00"
+      }
+    ],
+    "Configuration": [
+      {
+        "test_name": "Default Configuration",
+        "passed": true,
+        "error": null,
+        "details": {
+          "config_created": true,
+          "primary_platform": "oanda",
+          "has_platforms": false
+        },
+        "execution_time_ms": 0.043392181396484375,
+        "timestamp": "2025-07-08T23:20:04.684352+00:00"
+      },
+      {
+        "test_name": "Configuration Loading",
+        "passed": true,
+        "error": null,
+        "details": {
+          "router_created": true,
+          "config_loaded": true
+        },
+        "execution_time_ms": 0.03910064697265625,
+        "timestamp": "2025-07-08T23:20:04.684497+00:00"
+      }
+    ],
+    "Adapters": [
+      {
+        "test_name": "Oanda Adapter Creation",
+        "passed": true,
+        "error": null,
+        "details": {
+          "adapter_created": true,
+          "platform": "oanda",
+          "connected": false
+        },
+        "execution_time_ms": 0.024080276489257812,
+        "timestamp": "2025-07-08T23:20:04.684851+00:00"
+      },
+      {
+        "test_name": "Adapter Registration",
+        "passed": true,
+        "error": null,
+        "details": {
+          "registry_working": true,
+          "available_platforms": [
+            "oanda"
+          ],
+          "oanda_registered": true
+        },
+        "execution_time_ms": 0.0171661376953125,
+        "timestamp": "2025-07-08T23:20:04.684971+00:00"
+      },
+      {
+        "test_name": "Interface Compliance",
+        "passed": true,
+        "error": null,
+        "details": {
+          "interface_compliant": true,
+          "implemented_methods": {
+            "connect": true,
+            "disconnect": true,
+            "health_check": true,
+            "get_live_price": true,
+            "get_account_info": true,
+            "get_open_positions": true,
+            "execute_market_trade": true,
+            "execute_limit_trade": true
+          }
+        },
+        "execution_time_ms": 0.025272369384765625,
+        "timestamp": "2025-07-08T23:20:04.685085+00:00"
+      }
+    ],
+    "Router": [
+      {
+        "test_name": "Router Creation",
+        "passed": true,
+        "error": null,
+        "details": {
+          "router_created": true,
+          "global_router_available": true
+        },
+        "execution_time_ms": 0.031232833862304688,
+        "timestamp": "2025-07-08T23:20:04.685673+00:00"
+      },
+      {
+        "test_name": "Router Initialization",
+        "passed": true,
+        "error": null,
+        "details": {
+          "router_can_initialize": true,
+          "config_loaded": true
+        },
+        "execution_time_ms": 0.03790855407714844,
+        "timestamp": "2025-07-08T23:20:04.685824+00:00"
+      },
+      {
+        "test_name": "Platform Selection",
+        "passed": true,
+        "error": null,
+        "details": {
+          "platform_selection_working": true,
+          "selected_platform": "oanda"
+        },
+        "execution_time_ms": 0.07700920104980469,
+        "timestamp": "2025-07-08T23:20:04.686039+00:00"
+      },
+      {
+        "test_name": "Router Overhead",
+        "passed": true,
+        "error": null,
+        "details": {
+          "selection_time_100_calls_ms": 0.0629425048828125,
+          "avg_selection_time_ms": 0.000629425048828125,
+          "performance_acceptable": true
+        },
+        "execution_time_ms": 0.09036064147949219,
+        "timestamp": "2025-07-08T23:20:04.723330+00:00"
+      }
+    ],
+    "Universal Tools": [
+      {
+        "test_name": "Tool Creation",
+        "passed": true,
+        "error": null,
+        "details": {
+          "tools_created": true,
+          "tools_callable": {
+            "execute_market_trade": false,
+            "get_account_info": false
+          }
+        },
+        "execution_time_ms": 0.018358230590820312,
+        "timestamp": "2025-07-08T23:20:04.686531+00:00"
+      },
+      {
+        "test_name": "Tool Signatures",
+        "passed": false,
+        "error": "Tool(name='execute_market_trade', description='Tool Name: execute_market_trade\\nTool Arguments: {\\'instrument\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'side\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'units\\': {\\'description\\': None, \\'type\\': \\'float\\'}, \\'stop_loss\\': {\\'description\\': None, \\'type\\': \\'Union[float, NoneType]\\'}, \\'take_profit\\': {\\'description\\': None, \\'type\\': \\'Union[float, NoneType]\\'}, \\'reason\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'max_slippage\\': {\\'description\\': None, \\'type\\': \\'float\\'}, \\'platform_preference\\': {\\'description\\': None, \\'type\\': \\'Union[str, NoneType]\\'}}\\nTool Description: \\nExecute market order through platform abstraction layer.\\n\\nThis tool maintains the exact same interface your CrewAI agents already use,\\nbut now routes through the universal platform system instead of directly to Oanda.\\n\\nArgs:\\n    instrument: Trading instrument (e.g., \"EUR_USD\", \"US30_USD\")\\n    side: Trade side (\"buy\" or \"sell\")\\n    units: Position size in units\\n    stop_loss: Optional stop loss price\\n    take_profit: Optional take profit price\\n    reason: Reason for the trade\\n    max_slippage: Maximum acceptable slippage (0.1% default)\\n    platform_preference: Preferred platform (\"oanda\", \"metatrader5\", etc.)\\n\\nReturns:\\n    Dict with execution results in same format as before\\n', env_vars=[], args_schema=<class 'abc.Execute_Market_Trade'>, description_updated=False, cache_function=<function BaseTool.<lambda> at 0x0000023209162480>, result_as_answer=False, max_usage_count=None, current_usage_count=0, func=<function execute_market_trade at 0x00000232124CA7A0>) is not a callable object",
+        "details": {
+          "traceback": "Traceback (most recent call last):\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 115, in _run_test\n    test_result = test_func(*args, **kwargs)\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 558, in _test_tool_signatures\n    sig = inspect.signature(execute_market_trade)\n  File \"C:\\Python313\\Lib\\inspect.py\", line 3349, in signature\n    return Signature.from_callable(obj, follow_wrapped=follow_wrapped,\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                                   globals=globals, locals=locals, eval_str=eval_str)\n                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Python313\\Lib\\inspect.py\", line 3072, in from_callable\n    return _signature_from_callable(obj, sigcls=cls,\n                                    follow_wrapper_chains=follow_wrapped,\n                                    globals=globals, locals=locals, eval_str=eval_str)\n  File \"C:\\Python313\\Lib\\inspect.py\", line 2500, in _signature_from_callable\n    raise TypeError('{!r} is not a callable object'.format(obj))\nTypeError: Tool(name='execute_market_trade', description='Tool Name: execute_market_trade\\nTool Arguments: {\\'instrument\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'side\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'units\\': {\\'description\\': None, \\'type\\': \\'float\\'}, \\'stop_loss\\': {\\'description\\': None, \\'type\\': \\'Union[float, NoneType]\\'}, \\'take_profit\\': {\\'description\\': None, \\'type\\': \\'Union[float, NoneType]\\'}, \\'reason\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'max_slippage\\': {\\'description\\': None, \\'type\\': \\'float\\'}, \\'platform_preference\\': {\\'description\\': None, \\'type\\': \\'Union[str, NoneType]\\'}}\\nTool Description: \\nExecute market order through platform abstraction layer.\\n\\nThis tool maintains the exact same interface your CrewAI agents already use,\\nbut now routes through the universal platform system instead of directly to Oanda.\\n\\nArgs:\\n    instrument: Trading instrument (e.g., \"EUR_USD\", \"US30_USD\")\\n    side: Trade side (\"buy\" or \"sell\")\\n    units: Position size in units\\n    stop_loss: Optional stop loss price\\n    take_profit: Optional take profit price\\n    reason: Reason for the trade\\n    max_slippage: Maximum acceptable slippage (0.1% default)\\n    platform_preference: Preferred platform (\"oanda\", \"metatrader5\", etc.)\\n\\nReturns:\\n    Dict with execution results in same format as before\\n', env_vars=[], args_schema=<class 'abc.Execute_Market_Trade'>, description_updated=False, cache_function=<function BaseTool.<lambda> at 0x0000023209162480>, result_as_answer=False, max_usage_count=None, current_usage_count=0, func=<function execute_market_trade at 0x00000232124CA7A0>) is not a callable object\n"
+        },
+        "execution_time_ms": 0.07367134094238281,
+        "timestamp": "2025-07-08T23:20:04.686649+00:00"
+      },
+      {
+        "test_name": "Async Runner",
+        "passed": true,
+        "error": null,
+        "details": {
+          "async_runner_working": true,
+          "test_result": true
+        },
+        "execution_time_ms": 27.347803115844727,
+        "timestamp": "2025-07-08T23:20:04.689150+00:00"
+      }
+    ],
+    "Unknown": [
+      {
+        "test_name": "Function Signatures",
+        "passed": false,
+        "error": "Tool(name='execute_market_trade', description='Tool Name: execute_market_trade\\nTool Arguments: {\\'instrument\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'side\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'units\\': {\\'description\\': None, \\'type\\': \\'float\\'}, \\'stop_loss\\': {\\'description\\': None, \\'type\\': \\'Union[float, NoneType]\\'}, \\'take_profit\\': {\\'description\\': None, \\'type\\': \\'Union[float, NoneType]\\'}, \\'reason\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'max_slippage\\': {\\'description\\': None, \\'type\\': \\'float\\'}, \\'platform_preference\\': {\\'description\\': None, \\'type\\': \\'Union[str, NoneType]\\'}}\\nTool Description: \\nExecute market order through platform abstraction layer.\\n\\nThis tool maintains the exact same interface your CrewAI agents already use,\\nbut now routes through the universal platform system instead of directly to Oanda.\\n\\nArgs:\\n    instrument: Trading instrument (e.g., \"EUR_USD\", \"US30_USD\")\\n    side: Trade side (\"buy\" or \"sell\")\\n    units: Position size in units\\n    stop_loss: Optional stop loss price\\n    take_profit: Optional take profit price\\n    reason: Reason for the trade\\n    max_slippage: Maximum acceptable slippage (0.1% default)\\n    platform_preference: Preferred platform (\"oanda\", \"metatrader5\", etc.)\\n\\nReturns:\\n    Dict with execution results in same format as before\\n', env_vars=[], args_schema=<class 'abc.Execute_Market_Trade'>, description_updated=False, cache_function=<function BaseTool.<lambda> at 0x0000023209162480>, result_as_answer=False, max_usage_count=None, current_usage_count=0, func=<function execute_market_trade at 0x00000232124CA7A0>) is not a callable object",
+        "details": {
+          "traceback": "Traceback (most recent call last):\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 115, in _run_test\n    test_result = test_func(*args, **kwargs)\n  File \"E:\\projects\\autonomous_trading_system\\test.py\", line 634, in _test_function_signatures\n    sig = inspect.signature(execute_market_trade)\n  File \"C:\\Python313\\Lib\\inspect.py\", line 3349, in signature\n    return Signature.from_callable(obj, follow_wrapped=follow_wrapped,\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                                   globals=globals, locals=locals, eval_str=eval_str)\n                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Python313\\Lib\\inspect.py\", line 3072, in from_callable\n    return _signature_from_callable(obj, sigcls=cls,\n                                    follow_wrapper_chains=follow_wrapped,\n                                    globals=globals, locals=locals, eval_str=eval_str)\n  File \"C:\\Python313\\Lib\\inspect.py\", line 2500, in _signature_from_callable\n    raise TypeError('{!r} is not a callable object'.format(obj))\nTypeError: Tool(name='execute_market_trade', description='Tool Name: execute_market_trade\\nTool Arguments: {\\'instrument\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'side\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'units\\': {\\'description\\': None, \\'type\\': \\'float\\'}, \\'stop_loss\\': {\\'description\\': None, \\'type\\': \\'Union[float, NoneType]\\'}, \\'take_profit\\': {\\'description\\': None, \\'type\\': \\'Union[float, NoneType]\\'}, \\'reason\\': {\\'description\\': None, \\'type\\': \\'str\\'}, \\'max_slippage\\': {\\'description\\': None, \\'type\\': \\'float\\'}, \\'platform_preference\\': {\\'description\\': None, \\'type\\': \\'Union[str, NoneType]\\'}}\\nTool Description: \\nExecute market order through platform abstraction layer.\\n\\nThis tool maintains the exact same interface your CrewAI agents already use,\\nbut now routes through the universal platform system instead of directly to Oanda.\\n\\nArgs:\\n    instrument: Trading instrument (e.g., \"EUR_USD\", \"US30_USD\")\\n    side: Trade side (\"buy\" or \"sell\")\\n    units: Position size in units\\n    stop_loss: Optional stop loss price\\n    take_profit: Optional take profit price\\n    reason: Reason for the trade\\n    max_slippage: Maximum acceptable slippage (0.1% default)\\n    platform_preference: Preferred platform (\"oanda\", \"metatrader5\", etc.)\\n\\nReturns:\\n    Dict with execution results in same format as before\\n', env_vars=[], args_schema=<class 'abc.Execute_Market_Trade'>, description_updated=False, cache_function=<function BaseTool.<lambda> at 0x0000023209162480>, result_as_answer=False, max_usage_count=None, current_usage_count=0, func=<function execute_market_trade at 0x00000232124CA7A0>) is not a callable object\n"
+        },
+        "execution_time_ms": 0.06818771362304688,
+        "timestamp": "2025-07-08T23:20:04.717175+00:00"
+      },
+      {
+        "test_name": "Return Formats",
+        "passed": true,
+        "error": null,
+        "details": {
+          "return_format_compatible": true,
+          "note": "Return formats converted to legacy format for compatibility"
+        },
+        "execution_time_ms": 0.0133514404296875,
+        "timestamp": "2025-07-08T23:20:04.718341+00:00"
+      }
+    ],
+    "Performance": [
+      {
+        "test_name": "Memory Usage",
+        "passed": true,
+        "error": null,
+        "details": {
+          "memory_usage_mb": 310.5234375,
+          "memory_acceptable": true
+        },
+        "execution_time_ms": 0.08797645568847656,
+        "timestamp": "2025-07-08T23:20:04.723524+00:00"
+      }
+    ]
+  },
+  "recommendations": [
+    "\u2705 Platform abstraction layer is ready for use!",
+    "\ud83d\udee0\ufe0f Universal Tools issues: Check tool implementations",
+    "\ud83d\udccb Next steps:",
+    "   1. Update your crew.py imports",
+    "   2. Test with existing backtests",
+    "   3. Verify live trading functionality",
+    "   4. Monitor performance in production"
+  ]
+}

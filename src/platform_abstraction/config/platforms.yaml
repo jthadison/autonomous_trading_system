@@ -1,0 +1,238 @@
+# Platform Abstraction Configuration
+# File: src/platform_abstraction/config/platforms.yaml
+
+# ================================
+# MAIN PLATFORM CONFIGURATION
+# ================================
+
+# Primary platform selection and routing strategy
+routing:
+  primary_platform: "oanda"  # Default platform
+  strategy: "primary_only"   # primary_only, failover, load_balance, operation_specific, performance_based
+  
+  # Health monitoring settings
+  health_check_interval: 300  # seconds (5 minutes)
+  unhealthy_threshold: 3      # consecutive failures to mark unhealthy
+  recovery_threshold: 2       # consecutive successes to mark healthy
+  
+  # Performance thresholds
+  max_response_time_ms: 5000.0
+  min_uptime_percentage: 95.0
+
+# ================================
+# PLATFORM-SPECIFIC CONFIGURATIONS
+# ================================
+
+platforms:
+  
+  # OANDA Configuration
+  oanda:
+    enabled: true
+    weight: 1.0  # For load balancing (1.0 = normal weight)
+    max_concurrent_operations: 10
+    timeout_seconds: 30.0
+    retry_attempts: 3
+    
+    # Platform-specific settings
+    config:
+      # Oanda-specific configuration (if needed)
+      environment: "practice"  # or "live"
+      streaming_timeout: 60
+      max_slippage: 0.001  # 0.1%
+    
+    # Operation preferences
+    preferred_operations:
+      - "market_trade"
+      - "limit_trade"
+      - "get_positions"
+      - "get_account_info"
+      - "close_position"
+    
+    blocked_operations: []
+    
+    # Rate limiting (milliseconds between requests)
+    rate_limits:
+      market_trade: 200
+      limit_trade: 200
+      get_live_price: 100
+      get_positions: 500
+      get_account_info: 1000
+      
+    # Timeouts per operation
+    timeouts:
+      market_trade: 15.0
+      limit_trade: 10.0
+      get_live_price: 5.0
+      get_positions: 10.0
+      get_account_info: 10.0
+  
+  # MetaTrader 5 Configuration (for future use)
+  metatrader5:
+    enabled: false  # Not implemented yet
+    weight: 0.9
+    max_concurrent_operations: 8
+    timeout_seconds: 25.0
+    retry_attempts: 2
+    
+    config:
+      server: "MetaQuotes-Demo"
+      path: "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+      timeout: 10000
+      
+    preferred_operations:
+      - "market_trade"
+      - "get_positions"
+      
+    blocked_operations:
+      - "streaming_data"  # Example of operation not supported
+      
+    rate_limits:
+      market_trade: 500
+      get_live_price: 200
+      
+    timeouts:
+      market_trade: 20.0
+      get_live_price: 8.0
+  
+  # TradeLocker Configuration (for future use)
+  tradelocker:
+    enabled: false  # Not implemented yet
+    weight: 0.8
+    max_concurrent_operations: 5
+    timeout_seconds: 20.0
+    retry_attempts: 3
+    
+    config:
+      api_url: "https://api.tradelocker.com"
+      environment: "demo"  # or "live"
+      
+    preferred_operations:
+      - "limit_trade"
+      - "get_market_depth"
+      
+    blocked_operations: []
+    
+    rate_limits:
+      limit_trade: 300
+      get_live_price: 150
+      
+    timeouts:
+      limit_trade: 12.0
+      get_live_price: 6.0
+
+# ================================
+# OPERATION-SPECIFIC ROUTING
+# ================================
+
+# Route specific operations to preferred platforms
+operation_routing:
+  # Trading operations
+  market_trade: "oanda"
+  limit_trade: "oanda" 
+  stop_trade: "oanda"
+  
+  # Data operations
+  get_live_price: "oanda"
+  get_historical_data: "oanda"
+  
+  # Account operations
+  get_account_info: "oanda"
+  get_positions: "oanda"
+  get_orders: "oanda"
+
+# ================================
+# INSTRUMENT-SPECIFIC ROUTING
+# ================================
+
+# Route specific instruments to optimal platforms
+instrument_routing:
+  # Forex pairs - Oanda has good spreads
+  "EUR_USD": "oanda"
+  "GBP_USD": "oanda"
+  "USD_JPY": "oanda"
+  
+  # Indices - might prefer MetaTrader for some brokers
+  "US30_USD": "oanda"  # For now, will change when MT5 is available
+  "UK100_GBP": "oanda"
+  "DE30_EUR": "oanda"
+  
+  # Commodities
+  "XAU_USD": "oanda"  # Gold
+  "XAG_USD": "oanda"  # Silver
+
+# ================================
+# FAILOVER CONFIGURATION
+# ================================
+
+failover:
+  enabled: true
+  max_failover_attempts: 2
+  failover_delay_seconds: 1.0
+  
+  # Platform priority order for failover
+  priority_order:
+    - "oanda"
+    # - "metatrader5"  # When available
+    # - "tradelocker"  # When available
+
+# ================================
+# PERFORMANCE MONITORING
+# ================================
+
+monitoring:
+  enabled: true
+  metrics_retention_hours: 24
+  
+  # Alert thresholds
+  alerts:
+    high_response_time_ms: 2000
+    low_success_rate_percent: 90
+    consecutive_failures: 5
+  
+  # Performance tracking
+  track_operations:
+    - "market_trade"
+    - "limit_trade"
+    - "get_live_price"
+    - "get_positions"
+
+# ================================
+# LOGGING CONFIGURATION
+# ================================
+
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_all_operations: false
+  log_performance_metrics: true
+  log_failover_events: true
+  
+  # What to log
+  include:
+    - "platform_selection"
+    - "execution_times"
+    - "error_details"
+    - "health_checks"
+  
+  exclude:
+    - "sensitive_data"
+    - "api_keys"
+
+# ================================
+# DEVELOPMENT / TESTING SETTINGS
+# ================================
+
+development:
+  # Enable additional logging and validation in dev mode
+  debug_mode: false
+  validate_all_responses: true
+  simulate_failures: false  # For testing failover logic
+  
+  # Test configuration
+  test_instruments:
+    - "EUR_USD"
+    - "US30_USD"
+  
+  test_operations:
+    - "get_live_price"
+    - "get_account_info"
+    - "get_positions"
